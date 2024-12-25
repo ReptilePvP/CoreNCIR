@@ -73,16 +73,18 @@ int historyIndex = 0;        // Index for temperature history array
 uint8_t low_alarm_duty, high_alarm_duty, duty;
 int16_t low_alarm_temp, high_alarm_temp;
 
-// Button structure
+// First, update the button definitions with correct positions
 struct Button {
     int x, y, w, h;
     const char* label;
     bool pressed;
 };
 
+
 // Parameters: x position, y position, width, height, label, pressed state
-Button monitorBtn = {10, 180, 145, 50, "Monitor", false};      // Bottom left
-Button emissivityBtn = {165, 180, 145, 50, "Emissivity", false}; // Bottom right
+// Update button positions to match where they're actually drawn
+Button monitorBtn = {10, 180, 145, 50, "Monitor", false};      // Left button
+Button emissivityBtn = {165, 180, 145, 50, "Emissivity", false}; // Right button
 
 
 // 5. Function declarations
@@ -177,6 +179,7 @@ void handleTemperatureAlerts() {
     uint32_t statusColor;
     uint32_t ledColor = 0;
 
+    // Determine temperature status
     if (!useCelsius) {
         if (tempF < TEMP_MIN_F) {
             currentStatus = "Too Cold";
@@ -196,7 +199,7 @@ void handleTemperatureAlerts() {
             ledColor = 0x00FF00;
         }
     } else {
-        // Similar logic for Celsius
+        // Celsius logic
         if (tempC < TEMP_MIN_C) {
             currentStatus = "Too Cold";
             statusColor = COLOR_COLD;
@@ -216,6 +219,7 @@ void handleTemperatureAlerts() {
         }
     }
 
+    // Update LED if monitoring
     if (isMonitoring) {
         ncir2.setLEDColor(ledColor);
     }
@@ -225,51 +229,65 @@ void handleTemperatureAlerts() {
         updateStatusDisplay(currentStatus.c_str(), statusColor);
         lastStatus = currentStatus;
 
-        // Audio alert for temperature reached
+        // Audio alert for perfect temperature
         if (isMonitoring && (currentStatus == "Perfect")) {
-            M5.Speaker.tone(BEEP_FREQUENCY, BEEP_DURATION);
+            CoreS3.Speaker.tone(BEEP_FREQUENCY, BEEP_DURATION);
         }
     }
 }
 void updateStatusDisplay(const char* status, uint32_t color) {
-    // Clear previous status
+    // Clear status area
     CoreS3.Display.fillRect(15, 130, 290, 35, COLOR_BACKGROUND);
     
     // Display status
     CoreS3.Display.setTextSize(3);
     CoreS3.Display.setTextColor(color);
-    CoreS3.Display.drawString(status, CoreS3.Display.width()/2, 147);  // Centered in status box
+    CoreS3.Display.drawString(status, CoreS3.Display.width()/2, 147);
 }
 void adjustEmissivity() {
+    // Store the current emissivity value
     float currentEmissivity = ncir2.getEmissivity();
-    const float STEP_SIZE = 0.01;  // Explicit step size declaration
     const int boxWidth = 280;
     const int boxHeight = 120;
     const int boxX = (CoreS3.Display.width() - boxWidth) / 2;
     const int boxY = (CoreS3.Display.height() - boxHeight) / 2;
     bool adjusting = true;
     
-    // Draw the adjustment box
+    // Ensure all previous touches are cleared
+    while (CoreS3.Touch.getCount()) {
+        CoreS3.Touch.getDetail();
+        delay(10);
+    }
+    
+    // Save current display state
+    bool wasMonitoring = isMonitoring;
+    if (isMonitoring) {
+        isMonitoring = false;
+        ncir2.setLEDColor(0);
+    }
+    
+    // Draw adjustment box
+    CoreS3.Display.fillScreen(COLOR_BACKGROUND);  // Clear entire screen first
     CoreS3.Display.fillRect(boxX, boxY, boxWidth, boxHeight, COLOR_BACKGROUND);
     CoreS3.Display.drawRect(boxX, boxY, boxWidth, boxHeight, COLOR_TEXT);
     
-    // Title
+    // Draw title
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextColor(COLOR_TEXT);
     CoreS3.Display.drawString("Adjust Emissivity", CoreS3.Display.width()/2, boxY + 25);
     
-    // Draw buttons with step size indication
+    // Draw control buttons
     CoreS3.Display.fillRect(boxX + 20, boxY + boxHeight - 50, 40, 40, COLOR_BUTTON);
-    CoreS3.Display.drawString("-0.01", boxX + 40, boxY + boxHeight - 30);
-    
     CoreS3.Display.fillRect(boxX + boxWidth - 60, boxY + boxHeight - 50, 40, 40, COLOR_BUTTON);
-    CoreS3.Display.drawString("+0.01", boxX + boxWidth - 40, boxY + boxHeight - 30);
+    CoreS3.Display.drawString("-", boxX + 40, boxY + boxHeight - 30);
+    CoreS3.Display.drawString("+", boxX + boxWidth - 40, boxY + boxHeight - 30);
 
+    // Main adjustment loop
     while (adjusting) {
-        // Clear the emissivity display area only
-        CoreS3.Display.fillRect(boxX + 60, boxY + 40, boxWidth - 120, 40, COLOR_BACKGROUND);
+        CoreS3.update();  // Process M5Stack updates
         
-        // Display current emissivity centered
+        // Display current emissivity value
+        CoreS3.Display.fillRect(boxX + 60, boxY + 40, boxWidth - 120, 40, COLOR_BACKGROUND);
         CoreS3.Display.setTextSize(3);
         char emissStr[10];
         sprintf(emissStr, "%.2f", currentEmissivity);
@@ -278,35 +296,47 @@ void adjustEmissivity() {
         if (CoreS3.Touch.getCount()) {
             auto touched = CoreS3.Touch.getDetail();
             if (touched.wasPressed()) {
+                // Check for button touches
                 if (touched.y >= boxY + boxHeight - 50 && touched.y <= boxY + boxHeight - 10) {
-                    // Decrease button (-0.01)
+                    // Decrease button
                     if (touched.x >= boxX + 20 && touched.x <= boxX + 60) {
                         if (currentEmissivity > 0.1f) {
-                            currentEmissivity -= STEP_SIZE;  // Decrease by 0.01
-                            currentEmissivity = round(currentEmissivity * 100) / 100.0;  // Round to 2 decimal places
+                            currentEmissivity -= 0.01f;
+                            currentEmissivity = round(currentEmissivity * 100) / 100.0;
                             ncir2.setEmissivity(currentEmissivity);
                             CoreS3.Speaker.tone(1000, 50);
                         }
                     }
-                    // Increase button (+0.01)
+                    // Increase button
                     else if (touched.x >= boxX + boxWidth - 60 && touched.x <= boxX + boxWidth - 20) {
                         if (currentEmissivity < 1.0f) {
-                            currentEmissivity += STEP_SIZE;  // Increase by 0.01
-                            currentEmissivity = round(currentEmissivity * 100) / 100.0;  // Round to 2 decimal places
+                            currentEmissivity += 0.01f;
+                            currentEmissivity = round(currentEmissivity * 100) / 100.0;
                             ncir2.setEmissivity(currentEmissivity);
                             CoreS3.Speaker.tone(1000, 50);
                         }
                     }
                 }
-                // Exit if touched outside the box
+                // Exit only if touched outside the box
                 else if (touched.y < boxY || touched.y > boxY + boxHeight ||
                          touched.x < boxX || touched.x > boxX + boxWidth) {
                     adjusting = false;
                 }
-                delay(100);  // Debounce
+                
+                // Wait for touch release
+                while (CoreS3.Touch.getCount()) {
+                    CoreS3.Touch.getDetail();
+                    delay(10);
+                }
             }
         }
-        delay(50);  // Prevent display refresh from being too fast
+        delay(50);  // Small delay to prevent CPU overload
+    }
+    
+    // Restore monitoring state if it was active
+    if (wasMonitoring) {
+        isMonitoring = true;
+        handleTemperatureAlerts();
     }
     
     // Redraw main interface
@@ -314,37 +344,36 @@ void adjustEmissivity() {
     updateTemperatureDisplay(ncir2.getTempValue());
 }
 void updateTemperatureDisplay(int16_t temp) {
-    static int lastDisplayedValue = -999;  // Track last displayed integer value
-    
-    // Convert raw temperature to final display value
-    float currentTemp = temp / 100.0;
+    // Convert raw temperature to display value
+    float displayTemp = temp / 100.0;
     int displayValue;
 
     if (useCelsius) {
-        displayValue = (int)round(currentTemp);
+        displayValue = (int)round(displayTemp);
     } else {
-        displayValue = (int)round((currentTemp * 9.0/5.0) + 32.0);
+        displayValue = (int)round((displayTemp * 9.0/5.0) + 32.0);
     }
 
-    // Update display on any change for more responsive readings
-    if (displayValue != lastDisplayedValue) {
-        // Clear previous temperature display area
+    // Only update if value has changed
+    if (displayValue != lastDisplayTemp) {
+        // Clear temperature area
         CoreS3.Display.fillRect(15, 40, 290, 70, COLOR_BACKGROUND);
         
-        // Format and display new temperature
+        // Format temperature string
         char tempStr[32];
         sprintf(tempStr, "%d%c", displayValue, useCelsius ? 'C' : 'F');
         
+        // Display temperature
         CoreS3.Display.setTextSize(5);
         CoreS3.Display.setTextColor(COLOR_TEXT);
         CoreS3.Display.drawString(tempStr, CoreS3.Display.width()/2, 75);
         
-        lastDisplayedValue = displayValue;
+        lastDisplayTemp = displayValue;
     }
 }
-bool touchInButton(Button& btn, int32_t touch_x, int32_t touch_y) {
-    return (touch_x >= btn.x && touch_x <= btn.x + btn.w &&
-            touch_y >= btn.y && touch_y <= btn.y + btn.h);
+bool touchInButton(Button &btn, int32_t touch_x, int32_t touch_y) {
+    return (touch_x >= btn.x && touch_x <= (btn.x + btn.w) &&
+            touch_y >= btn.y && touch_y <= (btn.y + btn.h));
 }
 int16_t celsiusToFahrenheit(int16_t celsius) {
     return (celsius * 9 / 5) + 3200;
@@ -422,6 +451,7 @@ void drawBatteryStatus() {
 void drawInterface() {
     // Clear screen with background color
     CoreS3.Display.fillScreen(COLOR_BACKGROUND);
+    
     // Draw header area
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextColor(COLOR_TEXT);
@@ -430,18 +460,17 @@ void drawInterface() {
     CoreS3.Display.drawString("Terp Timer", 80, 15);
 
     // Draw main temperature box (larger and centered)
-    CoreS3.Display.drawRect(10, 35, 300, 80, COLOR_TEXT);  // Made taller
+    CoreS3.Display.drawRect(10, 35, 300, 80, COLOR_TEXT);
 
     // Draw status box (below temperature)
-    CoreS3.Display.drawRect(10, 125, 300, 45, COLOR_TEXT);  // Adjusted height
+    CoreS3.Display.drawRect(10, 125, 300, 45, COLOR_TEXT);
 
-    // Draw bottom buttons with better spacing
+    // Draw buttons - ensure these positions match the Button struct definitions
     drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
     drawButton(emissivityBtn, COLOR_BUTTON);
 
     // Draw battery status in top right
     drawBatteryStatus();
-
 }
 bool selectTemperatureUnit() {
     CoreS3.Display.fillScreen(COLOR_BACKGROUND);
@@ -643,18 +672,23 @@ void setup() {
     drawBatteryStatus();
 }
 void loop() {
-    CoreS3.update();
+    CoreS3.update();  // Essential M5Stack update
     
     static unsigned long lastUpdate = 0;
     static unsigned long lastBatteryUpdate = 0;
     unsigned long currentMillis = millis();
     
-    // Update temperature more frequently (every 100ms)
+    // Temperature update (every 100ms)
     if (currentMillis - lastUpdate >= 100) {
-        // Get direct temperature reading
+        // Get temperature and update display
         currentTemp = ncir2.getTempValue();
         updateTemperatureDisplay(currentTemp);
-        handleTemperatureAlerts();
+        
+        // Handle alerts if monitoring is active
+        if (isMonitoring) {
+            handleTemperatureAlerts();
+        }
+        
         lastUpdate = currentMillis;
     }
     
@@ -668,22 +702,22 @@ void loop() {
     if (CoreS3.Touch.getCount()) {
         auto touched = CoreS3.Touch.getDetail();
         if (touched.wasPressed()) {
-            if (touchInButton(monitorBtn, touched.x, touched.y)) {
-                isMonitoring = !isMonitoring;
-                drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
-                if (!isMonitoring) {
-                    ncir2.setLEDColor(0);
-                    CoreS3.Speaker.stop();
-                } else {
-                    handleTemperatureAlerts();
+            // Monitor button
+            if (touched.y >= 180 && touched.y <= 230) {
+                if (touched.x >= 10 && touched.x <= 155) {
+                    toggleMonitoring();
+                }
+                // Emissivity button
+                else if (touched.x >= 165 && touched.x <= 310) {
+                    adjustEmissivity();
                 }
             }
-            else if (touchInButton(emissivityBtn, touched.x, touched.y)) {
-                adjustEmissivity();
+            
+            // Clear remaining touches
+            while (CoreS3.Touch.getCount()) {
+                CoreS3.Touch.getDetail();
+                delay(5);
             }
-            delay(100);  // Debounce
         }
     }
-    
-    delay(10);  // Small delay to prevent CPU overload
 }
