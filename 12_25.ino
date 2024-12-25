@@ -440,59 +440,63 @@ void drawButton(Button &btn, uint32_t color) {
     CoreS3.Display.drawString(btn.label, btn.x + (btn.w/2), btn.y + (btn.h/2));
 }
 void drawBatteryStatus() {
-    bool bat_ischarging = CoreS3.Power.isCharging();
-    int bat_level = CoreS3.Power.getBatteryLevel();
+    // Safely get battery status
+    bool bat_ischarging = false;
+    int bat_level = 0;
     
-    // Remove this condition to ensure battery always draws
-    // if (lastBatLevel == -1 || lastBatLevel != bat_level || lastChargeState != bat_ischarging) {
+    try {
+        bat_ischarging = CoreS3.Power.isCharging();
+        bat_level = CoreS3.Power.getBatteryLevel();
+        
+        // Ensure battery level is within valid range
+        if (bat_level < 0) bat_level = 0;
+        if (bat_level > 100) bat_level = 100;
+    } catch (...) {
+        // If reading battery fails, show default state
+        bat_ischarging = false;
+        bat_level = 50;
+    }
     
-    // Position battery in top right corner
-    int batteryX = CoreS3.Display.width() - 60;  // 60 pixels from right edge
-    int batteryY = 5;  // 5 pixels from top
+    // Position battery indicator in top right
+    int batteryX = CoreS3.Display.width() - 45;
+    int batteryY = 5;
     
-    // Clear the battery area
-    CoreS3.Display.fillRect(batteryX - 10, batteryY, 70, 35, COLOR_BACKGROUND);
+    // Clear battery area - smaller clear area
+    CoreS3.Display.fillRect(batteryX - 12, batteryY, 50, 20, COLOR_BACKGROUND);
     
     // Draw battery outline
-    CoreS3.Display.drawRect(batteryX, batteryY, 40, 20, COLOR_TEXT);
-    CoreS3.Display.fillRect(batteryX + 40, batteryY + 5, 4, 10, COLOR_TEXT);
+    CoreS3.Display.drawRect(batteryX, batteryY, 35, 18, COLOR_TEXT);
+    CoreS3.Display.fillRect(batteryX + 35, batteryY + 4, 3, 10, COLOR_TEXT);
     
-    // Calculate fill width (36 pixels is the maximum fillable width)
-    int fillWidth = (bat_level * 36) / 100;
+    // Calculate fill width with bounds checking
+    int fillWidth = ((bat_level * 31) / 100);
+    fillWidth = max(0, min(fillWidth, 31));  // Ensure fill width is within bounds
     
-    // Determine battery color
-    uint32_t batteryColor;
+    // Determine battery color with safe defaults
+    uint32_t batteryColor = COLOR_BATTERY_GOOD;  // Default color
     if (bat_ischarging) {
         batteryColor = COLOR_CHARGING;
     } else if (bat_level <= 20) {
         batteryColor = COLOR_BATTERY_LOW;
     } else if (bat_level <= 50) {
         batteryColor = COLOR_BATTERY_MED;
-    } else {
-        batteryColor = COLOR_BATTERY_GOOD;
     }
     
     // Fill battery indicator
     if (fillWidth > 0) {
-        CoreS3.Display.fillRect(batteryX + 2, batteryY + 2, fillWidth, 16, batteryColor);
+        CoreS3.Display.fillRect(batteryX + 2, batteryY + 2, fillWidth, 14, batteryColor);
     }
     
     // Draw charging icon if charging
     if (bat_ischarging) {
         CoreS3.Display.setTextSize(1);
         CoreS3.Display.setTextColor(COLOR_TEXT);
-        CoreS3.Display.drawString("⚡", batteryX - 10, batteryY + 10);
+        CoreS3.Display.drawString("⚡", batteryX - 12, batteryY + 9);
     }
     
-    // Always show percentage
-    CoreS3.Display.setTextSize(1);
-    CoreS3.Display.setTextColor(COLOR_TEXT);
-    CoreS3.Display.drawString(String(bat_level) + "%", batteryX, batteryY + 25);
-    
-    // Update last known values
+    // Update last known values only if read successfully
     lastBatLevel = bat_level;
     lastChargeState = bat_ischarging;
-    // }  // Remove the closing brace of the condition
 }
 void drawInterface() {
     // Clear screen with background color
@@ -646,7 +650,7 @@ void setup() {
     float lastTemp = 0;
     float stabilityThreshold = 0.5; // °C
     int stableReadings = 0;
-    const int requiredStableReadings = 5;
+    const int requiredStableReadings = 100;
 
     // Pre-clear text areas once
     CoreS3.Display.fillRect(0, stabilityY - 15, CoreS3.Display.width(), 30, COLOR_BACKGROUND);
@@ -728,14 +732,17 @@ void loop() {
     // Update temperature and status
     if (currentMillis - lastUpdate >= 100) {  // Every 100ms
         // Get new temperature reading
-        currentTemp = ncir2.getTempValue();
+        int16_t newTemp = ncir2.getTempValue();
         
-        // Force display update by invalidating last display value
-        lastDisplayTemp = -999;
-        updateTemperatureDisplay(currentTemp);
-        
-        if (isMonitoring) {
-            handleTemperatureAlerts();
+        // Only update if temperature changed significantly (by 1 degree or more)
+        if (abs(newTemp - lastDisplayTemp) >= 100) {  // Since temp is in hundredths, 100 = 1 degree
+            currentTemp = newTemp;
+            updateTemperatureDisplay(currentTemp);
+            lastDisplayTemp = newTemp;
+            
+            if (isMonitoring) {
+                handleTemperatureAlerts();
+            }
         }
         
         lastUpdate = currentMillis;
@@ -749,7 +756,6 @@ void loop() {
         drawBatteryStatus();
         lastBatteryUpdate = currentMillis;
     }
-
     // Handle touch events
     if (CoreS3.Touch.getCount()) {
         auto touched = CoreS3.Touch.getDetail();
