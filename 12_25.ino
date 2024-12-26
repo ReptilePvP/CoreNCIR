@@ -50,6 +50,11 @@ const float EMISSIVITY_MAX = 1.0;
 const float EMISSIVITY_STEP = 0.05;
 float currentEmissivity = 0.95;  // Default value
 
+const int TOUCH_DEBOUNCE = 25;      // Reduced from 50ms to 25ms
+const int TOUCH_THRESHOLD = 3;       // Minimum touch pressure threshold
+const int BUTTON_HIGHLIGHT = 0x6B6B6B;  // Color for button press feedback
+
+
 // 4. Global variables
 int16_t currentTemp = 0;
 bool isMonitoring = false;
@@ -78,13 +83,12 @@ struct Button {
     int x, y, w, h;
     const char* label;
     bool pressed;
+    bool highlighted;  // New state for visual feedback
 };
-
 // Parameters: x position, y position, width, height, label, pressed state
 // Update button positions to match where they're actually drawn
-Button monitorBtn = {10, 180, 145, 50, "Monitor", false};      // Left button
-Button emissivityBtn = {165, 180, 145, 50, "Emissivity", false}; // Right button
-
+Button monitorBtn = {10, 180, 145, 50, "Monitor", false, false};
+Button emissivityBtn = {165, 180, 145, 50, "Emissivity", false, false};
 
 // 5. Function declarations
 void drawButton(Button &btn, uint32_t color);
@@ -414,12 +418,16 @@ void updateTemperatureDisplay(int16_t temp) {
     CoreS3.Display.drawString(tempStr, CoreS3.Display.width()/2, 75);
 }
 bool touchInButton(Button &btn, int32_t touch_x, int32_t touch_y) {
-    bool result = (touch_x >= btn.x && touch_x <= (btn.x + btn.w) &&
-                  touch_y >= btn.y && touch_y <= (btn.y + btn.h));
-    if (result) {
-        Serial.printf("Button hit: %s\n", btn.label);  // Debug output
+    bool hit = (touch_x >= btn.x && touch_x <= (btn.x + btn.w) &&
+                touch_y >= btn.y && touch_y <= (btn.y + btn.h));
+    
+    if (hit) {
+        // Provide immediate visual feedback
+        btn.highlighted = true;
+        drawButton(btn, BUTTON_HIGHLIGHT);
     }
-    return result;
+    
+    return hit;
 }
 int16_t celsiusToFahrenheit(int16_t celsius) {
     return (celsius * 9 / 5) + 3200;
@@ -428,16 +436,19 @@ int16_t fahrenheitToCelsius(int16_t fahrenheit) {
     return ((fahrenheit - 3200) * 5 / 9);
 }
 void drawButton(Button &btn, uint32_t color) {
-    // Draw button background
+    // Draw button background with highlight effect
     CoreS3.Display.fillRoundRect(btn.x, btn.y, btn.w, btn.h, 10, color);
     
     // Draw button border for better visibility
     CoreS3.Display.drawRoundRect(btn.x, btn.y, btn.w, btn.h, 10, COLOR_TEXT);
     
-    // Draw button text
+    // Draw button text with slight offset when highlighted
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextColor(COLOR_TEXT);
-    CoreS3.Display.drawString(btn.label, btn.x + (btn.w/2), btn.y + (btn.h/2));
+    int yOffset = btn.highlighted ? 1 : 0;  // Slight push effect when pressed
+    CoreS3.Display.drawString(btn.label, 
+                            btn.x + (btn.w/2), 
+                            btn.y + (btn.h/2) + yOffset);
 }
 void drawBatteryStatus() {
     // Safely get battery status
