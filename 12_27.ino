@@ -175,7 +175,6 @@ void loadSettings();
 void enterSleepMode();
 void enterEmissivityMode();
 void updateStatusMessage();
-void printDebugInfo();
 void checkForErrors();
 
 void checkForErrors() {
@@ -670,13 +669,22 @@ void adjustEmissivity() {
     lastStatus = "";
 }
 void updateTemperatureDisplay(int16_t temp) {
-    // Clear temperature area with padding
-    int tempBoxY = HEADER_HEIGHT + MARGIN;
-    CoreS3.Display.fillRect(MARGIN + 5, tempBoxY + 5, 
-                          CoreS3.Display.width() - (MARGIN * 2) - 10, 
-                          TEMP_BOX_HEIGHT - 10, COLOR_BACKGROUND);
+    static LGFX_Sprite tempSprite(&CoreS3.Display);  // Create sprite for temperature display
+    static bool spriteInitialized = false;
     
-    // Convert and format temperature
+    // Initialize sprite once
+    if (!spriteInitialized) {
+        tempSprite.createSprite(200, 50);  // Create sprite with enough size for temperature
+        spriteInitialized = true;
+    }
+    
+    // Prepare the sprite
+    tempSprite.fillSprite(COLOR_BACKGROUND);
+    tempSprite.setTextDatum(middle_center);
+    tempSprite.setTextSize(5);
+    tempSprite.setTextColor(COLOR_TEXT);
+    
+    // Format temperature string - direct conversion to whole number
     float displayTemp = temp / 100.0;
     char tempStr[32];
     
@@ -687,10 +695,16 @@ void updateTemperatureDisplay(int16_t temp) {
         sprintf(tempStr, "%dF", (int)round(tempF));
     }
     
-    // Display temperature with larger text
-    CoreS3.Display.setTextSize(5);
-    CoreS3.Display.setTextColor(COLOR_TEXT);
-    CoreS3.Display.drawString(tempStr, CoreS3.Display.width()/2, tempBoxY + (TEMP_BOX_HEIGHT/2));
+    // Draw to sprite
+    tempSprite.drawString(tempStr, tempSprite.width()/2, tempSprite.height()/2);
+    
+    // Calculate position for sprite
+    int tempBoxY = HEADER_HEIGHT + MARGIN;
+    int spriteX = (CoreS3.Display.width() - tempSprite.width()) / 2;
+    int spriteY = tempBoxY + (TEMP_BOX_HEIGHT - tempSprite.height()) / 2;
+    
+    // Push sprite to display
+    tempSprite.pushSprite(spriteX, spriteY);
 }
 bool touchInButton(Button btn, int16_t x, int16_t y) {
     return (x >= btn.x && x < (btn.x + btn.w) &&
@@ -796,12 +810,12 @@ void drawInterface() {
     emissivityBtn = {MARGIN + buttonWidth + BUTTON_SPACING, buttonY, buttonWidth, BUTTON_HEIGHT, "Emissivity", false, true};
     
     // Position settings button in top right, before battery
-    settingsBtn = {screenWidth - 80, 5, 30, 20, "⚙", false, true};
+    settingsBtn = {screenWidth - 115, 5, 30, 20, "⚙", false, true};
     
     // Draw all buttons
-    drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
-    drawButton(emissivityBtn, COLOR_BUTTON);
     drawButton(settingsBtn, COLOR_BUTTON);
+    drawButton(emissivityBtn, COLOR_BUTTON);
+    drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
     
     // Draw battery status last
     drawBatteryStatus();
@@ -1068,13 +1082,12 @@ void loop() {
         lastBatteryCheck = currentMillis;
     }
 
-    // Handle temperature monitoring if active
+    // Always update temperature in real-time
+    currentTemp = ncir2.getTempValue();
+    updateTemperatureDisplay(currentTemp);
+    
     if (isMonitoring) {
-        if (currentMillis - lastTempCheck >= TEMP_CHECK_INTERVAL) {
-            currentTemp = ncir2.getTempValue();  // Get current temperature
-            updateTemperatureDisplay(currentTemp);
-            lastTempCheck = currentMillis;
-        }
+        handleTemperatureAlerts();
     }
 
     // Touch handling
@@ -1142,16 +1155,21 @@ void loop() {
     // Handle low battery warning
     if (CoreS3.Power.getBatteryLevel() <= 20 && !lowBatteryWarningShown) {
         showLowBatteryWarning(CoreS3.Power.getBatteryLevel());
+        lowBatteryWarningShown = true;
+    }
+
+    // Reset low battery warning flag if battery level improves or charging
+    if (CoreS3.Power.getBatteryLevel() > 20 || CoreS3.Power.isCharging()) {
+        lowBatteryWarningShown = false;
     }
 
     // Update status message periodically
     if (currentMillis - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
-        updateStatusMessage();
+        if (isMonitoring) {
+            handleTemperatureAlerts();
+        }
         lastStatusUpdate = currentMillis;
     }
-
-    // Check for any errors
-    checkForErrors();
 
     // Optional: Debug information
     #ifdef DEBUG_MODE
@@ -1161,11 +1179,3 @@ void loop() {
         }
     #endif
 }
-
-#ifdef DEBUG_MODE
-void printDebugInfo() {
-    Serial.printf("Battery: %d%%\n", CoreS3.Power.getBatteryLevel());
-    Serial.printf("Temperature: %.2f°C\n", currentTemp/100.0);
-    Serial.printf("Memory: %d bytes\n", ESP.getFreeHeap());
-}
-#endif
