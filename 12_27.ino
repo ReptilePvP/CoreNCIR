@@ -43,6 +43,9 @@ const uint32_t COLOR_BATTERY_LOW = 0xFF0000;   // Red
 const uint32_t COLOR_BATTERY_MED = 0xFFA500;   // Orange
 const uint32_t COLOR_BATTERY_GOOD = 0x00FF00;  // Green
 const uint32_t COLOR_CHARGING = 0xFFFF00;      // Yellow
+const uint32_t COLOR_ICE_BLUE = 0x87CEFA;    // Light ice blue
+const uint32_t COLOR_NEON_GREEN = 0x39FF14;  // Bright neon green
+const uint32_t COLOR_LAVA = 0xFF4500;        // Red-orange lava color
 
 // Layout constants - adjusted TEMP_BOX_HEIGHT
 const int HEADER_HEIGHT = 30;
@@ -60,9 +63,10 @@ float currentEmissivity = 0.95;  // Default value
 
 
 // Touch and feedback constants
-const int TOUCH_DEBOUNCE = 10;             // Reduced from 25ms to 10ms
+const int TOUCH_DEBOUNCE = 100;             // Reduced from 25ms to 10ms
 const int AUDIO_FEEDBACK_DURATION = 15;     // Shorter audio feedback
 const float TEMP_THRESHOLD = 0.5;          // More sensitive temperature updates
+const int TOUCH_THRESHOLD = 10;      // Minimum movement to register as a touch
 const int BUTTON_HIGHLIGHT = 0x6B6B6B;  // Color for button press feedback
 
 
@@ -81,6 +85,9 @@ const unsigned long TEMP_UPDATE_INTERVAL = 250;  // Reduced update frequency
 const int DISPLAY_UPDATE_THRESHOLD = 1;  // Minimum change in temperature to trigger display update
 const int DISPLAY_SMOOTHING_SAMPLES = 10; // Number of samples for display smoothing
 unsigned long lastBeepTime = 0;  // Track last beep time
+const int ALERT_FREQUENCY = 1000;  // 1kHz tone
+const int ALERT_DURATION = 100;    // 100ms duration
+const int PERFECT_TEMP_FREQUENCY = 2000;  // 2kHz tone for perfect temperature
 
 const int MENU_ITEMS = 4;  // Number of settings options
 const char* settingsLabels[MENU_ITEMS] = {
@@ -144,6 +151,9 @@ Button monitorBtn = {0, 0, 0, 0, "Monitor", false, true};
 Button emissivityBtn = {0, 0, 0, 0, "Emissivity", false, true};
 Button settingsBtn = {0, 0, 0, 0, "⚙", false, true};  // Settings button
 
+// At the top of your file, add:
+//#define DEBUG_MODE  // Uncomment this line to enable debug output
+
 // 5. Function declarations
 void drawButton(Button &btn, uint32_t color);
 void drawInterface();
@@ -177,6 +187,17 @@ void enterEmissivityMode();
 void updateStatusMessage();
 void checkForErrors();
 
+// Add this function to your code:
+void printDebugInfo() {
+    Serial.println("=== Debug Info ===");
+    Serial.print("Temperature: "); Serial.println(currentTemp / 100.0);
+    Serial.print("Battery Level: "); Serial.print(CoreS3.Power.getBatteryLevel()); Serial.println("%");
+    Serial.print("Charging: "); Serial.println(CoreS3.Power.isCharging() ? "Yes" : "No");
+    Serial.print("Monitoring: "); Serial.println(isMonitoring ? "Yes" : "No");
+    Serial.print("Temperature Unit: "); Serial.println(useCelsius ? "Celsius" : "Fahrenheit");
+    Serial.print("Emissivity: "); Serial.println(currentEmissivity);
+    Serial.println("================");
+}
 void checkForErrors() {
     // Add basic error checking
     if (CoreS3.Power.getBatteryLevel() <= 5) {
@@ -438,44 +459,51 @@ void handleTemperatureAlerts() {
     String currentStatus;
     uint32_t statusColor;
     uint32_t ledColor = 0;
+    bool playAlert = false;
 
-    // Determine temperature status
+    // Use Fahrenheit values for status ranges
     if (!useCelsius) {
-        if (tempF < TEMP_MIN_F) {
+        if (tempF <= 300) {
+            currentStatus = "Monitoring...";
+            statusColor = COLOR_TEXT;
+            ledColor = 0xFFFFFF;
+        } else if (tempF <= 500) {
             currentStatus = "Too Cold";
-            statusColor = COLOR_COLD;
-            ledColor = 0x0000FF;
-        } else if (tempF > TEMP_MAX_F) {
-            currentStatus = "Too Hot!";
-            statusColor = COLOR_HOT;
-            ledColor = 0xFF0000;
-        } else if (abs(tempF - TEMP_TARGET_F) <= TEMP_TOLERANCE_F) {
-            currentStatus = "Perfect";
-            statusColor = COLOR_GOOD;
+            statusColor = COLOR_ICE_BLUE;
+            ledColor = 0x87CEFA;
+            playAlert = true;
+        } else if (tempF <= 650) {
+            currentStatus = "It's Perfect!";
+            statusColor = COLOR_NEON_GREEN;
             ledColor = 0x00FF00;
+            playAlert = true;
         } else {
-            currentStatus = "Ready";
-            statusColor = COLOR_GOOD;
-            ledColor = 0x00FF00;
+            currentStatus = "Way too hot!!";
+            statusColor = COLOR_LAVA;
+            ledColor = 0xFF4500;
+            playAlert = true;
         }
     } else {
-        // Celsius logic
-        if (tempC < TEMP_MIN_C) {
+        // Convert Fahrenheit ranges to Celsius
+        if (tempC <= 148.89) {
+            currentStatus = "Monitoring...";
+            statusColor = COLOR_TEXT;
+            ledColor = 0xFFFFFF;
+        } else if (tempC <= 260) {
             currentStatus = "Too Cold";
-            statusColor = COLOR_COLD;
-            ledColor = 0x0000FF;
-        } else if (tempC > TEMP_MAX_C) {
-            currentStatus = "Too Hot!";
-            statusColor = COLOR_HOT;
-            ledColor = 0xFF0000;
-        } else if (abs(tempC - TEMP_TARGET_C) <= TEMP_TOLERANCE_C) {
-            currentStatus = "Perfect";
-            statusColor = COLOR_GOOD;
+            statusColor = COLOR_ICE_BLUE;
+            ledColor = 0x87CEFA;
+            playAlert = true;
+        } else if (tempC <= 343.33) {
+            currentStatus = "It's Perfect!";
+            statusColor = COLOR_NEON_GREEN;
             ledColor = 0x00FF00;
+            playAlert = true;
         } else {
-            currentStatus = "Ready";
-            statusColor = COLOR_GOOD;
-            ledColor = 0x00FF00;
+            currentStatus = "Way too hot!!";
+            statusColor = COLOR_LAVA;
+            ledColor = 0xFF4500;
+            playAlert = true;
         }
     }
 
@@ -484,14 +512,22 @@ void handleTemperatureAlerts() {
         ncir2.setLEDColor(ledColor);
     }
 
-    // Update status display if changed
+    // Update status display and play alert if status changed
     if (lastStatus != currentStatus) {
         updateStatusDisplay(currentStatus.c_str(), statusColor);
         lastStatus = currentStatus;
 
-        // Audio alert for perfect temperature
-        if (isMonitoring && (currentStatus == "Perfect")) {
-            CoreS3.Speaker.tone(BEEP_FREQUENCY, BEEP_DURATION);
+        // Play alert sound if monitoring is enabled and sound is enabled
+        if (isMonitoring && soundEnabled && playAlert) {
+            if (currentStatus == "It's Perfect!") {
+                // Special tone for perfect temperature
+                CoreS3.Speaker.tone(PERFECT_TEMP_FREQUENCY, ALERT_DURATION);
+                delay(ALERT_DURATION);
+                CoreS3.Speaker.tone(PERFECT_TEMP_FREQUENCY, ALERT_DURATION);
+            } else {
+                // Single tone for other alerts
+                CoreS3.Speaker.tone(ALERT_FREQUENCY, ALERT_DURATION);
+            }
         }
     }
 }
@@ -812,13 +848,17 @@ void drawInterface() {
     // Position settings button in top right, before battery
     settingsBtn = {screenWidth - 115, 5, 30, 20, "⚙", false, true};
     
-    // Draw all buttons
+   // Draw all buttons with consistent colors and states
     drawButton(settingsBtn, COLOR_BUTTON);
     drawButton(emissivityBtn, COLOR_BUTTON);
     drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
     
-    // Draw battery status last
+    // Ensure battery status is drawn consistently
     drawBatteryStatus();
+    
+    // Update status display with correct state
+    updateStatusDisplay(isMonitoring ? "Monitoring..." : "Ready", 
+                       isMonitoring ? COLOR_GOOD : COLOR_TEXT);
 }
 bool selectTemperatureUnit() {
     CoreS3.Display.fillScreen(COLOR_BACKGROUND);
@@ -1090,14 +1130,14 @@ void loop() {
         handleTemperatureAlerts();
     }
 
-    // Touch handling
+    // Touch handling with improved responsiveness
     auto touched = CoreS3.Touch.getDetail();
     bool touchHandled = false;
 
     if (touched.wasPressed()) {
-        if (currentMillis - lastTouch >= 300) {  // Debounce touch
+        if (currentMillis - lastTouch >= TOUCH_DEBOUNCE) {  // Using reduced 100ms debounce
             lastActivityTime = currentMillis;  // Reset sleep timer
-
+            
             // Monitor button
             if (touchInButton(monitorBtn, touched.x, touched.y)) {
                 monitorBtn.highlighted = true;
@@ -1137,7 +1177,7 @@ void loop() {
         }
     }
     else if (touched.wasReleased()) {
-        // Reset button highlights
+        // Immediate response on release
         if (monitorBtn.highlighted) {
             monitorBtn.highlighted = false;
             drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
