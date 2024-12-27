@@ -115,17 +115,9 @@ const unsigned long TEMP_CHECK_INTERVAL = 1000;    // 1 second
 const unsigned long BATTERY_CHECK_INTERVAL = 30000; // 30 seconds
 const unsigned long STATUS_UPDATE_INTERVAL = 5000;  // 5 seconds
 const unsigned long DEBUG_INTERVAL = 5000;         // 5 seconds
-const unsigned long AUDIO_FEEDBACK_DURATION = 50;   // 50ms
 
 // State variables
-bool isMonitoring = false;
 bool lowBatteryWarningShown = false;
-bool inSettingsMenu = false;
-
-// Button states
-Button monitorBtn = {0};
-Button emissivityBtn = {0};
-Button settingsBtn = {0};
 
 // Temperature trend tracking variables
 float tempHistory[5] = {0};  // Array to store temperature history
@@ -134,19 +126,23 @@ int historyIndex = 0;        // Index for temperature history array
 uint8_t low_alarm_duty, high_alarm_duty, duty;
 int16_t low_alarm_temp, high_alarm_temp;
 
-// First, update the button definitions with correct positions
+// Update your Button struct definition (if not already done)
 struct Button {
-    int x, y, w, h;
+    int16_t x;
+    int16_t y;
+    uint16_t w;
+    uint16_t h;
     const char* label;
-    bool pressed;
-    bool highlighted;  // Add this line
+    bool highlighted;
+    bool enabled;
 };
 
-
 // Parameters: x position, y position, width, height, label, pressed state
-// Update button positions to match where they're actually drawn
-Button monitorBtn = {10, 180, 145, 50, "Monitor", false, false};      // Added false for highlighted
-Button emissivityBtn = {165, 180, 145, 50, "Emissivity", false, false}; // Added false for highlighted
+// Update your Button declarations
+// Update button declarations at the top
+Button monitorBtn = {0, 0, 0, 0, "Monitor", false, true};
+Button emissivityBtn = {0, 0, 0, 0, "Emissivity", false, true};
+Button settingsBtn = {0, 0, 0, 0, "⚙", false, true};  // Settings button
 
 // 5. Function declarations
 void drawButton(Button &btn, uint32_t color);
@@ -177,7 +173,32 @@ void handleSettingsMenu();
 void saveSettings();
 void loadSettings();
 void enterSleepMode();
+void enterEmissivityMode();
+void updateStatusMessage();
+void printDebugInfo();
+void checkForErrors();
 
+void checkForErrors() {
+    // Add basic error checking
+    if (CoreS3.Power.getBatteryLevel() <= 5) {
+        showLowBatteryWarning(CoreS3.Power.getBatteryLevel());
+    }
+    
+    // Add sensor communication check
+    int16_t testTemp = ncir2.getTempValue();
+    if (testTemp == 0 || testTemp < -1000 || testTemp > 10000) {
+        // Sensor communication error
+        updateStatusDisplay("Sensor Error", COLOR_HOT);
+    }
+}
+void updateStatusMessage() {
+    // This is already handled by updateStatusDisplay()
+    handleTemperatureAlerts();
+}
+void enterEmissivityMode() {
+    // This function already exists as adjustEmissivity()
+    adjustEmissivity();
+}
 void enterSleepMode() {
     CoreS3.Display.setBrightness(0);
     // Add any other sleep mode logic
@@ -682,17 +703,21 @@ int16_t fahrenheitToCelsius(int16_t fahrenheit) {
     return ((fahrenheit - 3200) * 5 / 9);
 }
 void drawButton(Button &btn, uint32_t color) {
-    // Draw button with rounded corners
-    CoreS3.Display.fillRoundRect(btn.x, btn.y, btn.w, btn.h, 10, color);
-    CoreS3.Display.drawRoundRect(btn.x, btn.y, btn.w, btn.h, 10, COLOR_TEXT);
+    if (btn.label == "⚙") {
+        // Special handling for settings button
+        CoreS3.Display.fillRoundRect(btn.x, btn.y, btn.w, btn.h, 4, color);
+        CoreS3.Display.drawRoundRect(btn.x, btn.y, btn.w, btn.h, 4, COLOR_TEXT);
+        CoreS3.Display.setTextSize(1);  // Smaller text for settings icon
+    } else {
+        // Normal button drawing
+        CoreS3.Display.fillRoundRect(btn.x, btn.y, btn.w, btn.h, 8, color);
+        CoreS3.Display.drawRoundRect(btn.x, btn.y, btn.w, btn.h, 8, COLOR_TEXT);
+        CoreS3.Display.setTextSize(2);
+    }
     
-    // Draw button text
-    CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextColor(COLOR_TEXT);
     int yOffset = btn.highlighted ? 1 : 0;
-    CoreS3.Display.drawString(btn.label, 
-                            btn.x + (btn.w/2), 
-                            btn.y + (btn.h/2) + yOffset);
+    CoreS3.Display.drawString(btn.label, btn.x + (btn.w/2), btn.y + (btn.h/2) + yOffset);
 }
 void drawBatteryStatus() {
     // Battery indicator position in header
@@ -743,18 +768,18 @@ void drawInterface() {
     // Clear entire screen
     CoreS3.Display.fillScreen(COLOR_BACKGROUND);
     
-    // Draw header area first
-    CoreS3.Display.fillRect(0, 0, CoreS3.Display.width(), HEADER_HEIGHT, COLOR_BACKGROUND);
+    // Calculate dimensions
+    int screenWidth = CoreS3.Display.width();
+    int screenHeight = CoreS3.Display.height();
+    int contentWidth = screenWidth - (MARGIN * 2);
+    
+    // Draw header area
+    CoreS3.Display.fillRect(0, 0, screenWidth, HEADER_HEIGHT, COLOR_BACKGROUND);
     
     // Draw title
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextColor(COLOR_TEXT);
     CoreS3.Display.drawString("Terp Timer", MARGIN + 70, HEADER_HEIGHT/2);
-
-    // Rest of interface drawing...
-    int screenWidth = CoreS3.Display.width();
-    int screenHeight = CoreS3.Display.height();
-    int contentWidth = screenWidth - (MARGIN * 2);
     
     // Temperature display box
     int tempBoxY = HEADER_HEIGHT + MARGIN;
@@ -764,16 +789,21 @@ void drawInterface() {
     int buttonY = screenHeight - BUTTON_HEIGHT - MARGIN;
     int statusBoxY = buttonY - STATUS_BOX_HEIGHT - MARGIN;
     CoreS3.Display.drawRoundRect(MARGIN, statusBoxY, contentWidth, STATUS_BOX_HEIGHT, 8, COLOR_TEXT);
-
-    // Draw buttons
-    int buttonWidth = (contentWidth - BUTTON_SPACING) / 2;
-    monitorBtn = {MARGIN, buttonY, buttonWidth, BUTTON_HEIGHT, "Monitor", false, false};
-    emissivityBtn = {MARGIN + buttonWidth + BUTTON_SPACING, buttonY, buttonWidth, BUTTON_HEIGHT, "Emissivity", false, false};
     
+    // Update button positions
+    int buttonWidth = (contentWidth - BUTTON_SPACING) / 2;
+    monitorBtn = {MARGIN, buttonY, buttonWidth, BUTTON_HEIGHT, "Monitor", false, true};
+    emissivityBtn = {MARGIN + buttonWidth + BUTTON_SPACING, buttonY, buttonWidth, BUTTON_HEIGHT, "Emissivity", false, true};
+    
+    // Position settings button in top right, before battery
+    settingsBtn = {screenWidth - 80, 5, 30, 20, "⚙", false, true};
+    
+    // Draw all buttons
     drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
     drawButton(emissivityBtn, COLOR_BUTTON);
-
-    // Draw battery status last to ensure it's on top
+    drawButton(settingsBtn, COLOR_BUTTON);
+    
+    // Draw battery status last
     drawBatteryStatus();
 }
 bool selectTemperatureUnit() {
@@ -838,45 +868,59 @@ void setup() {
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.drawString("Initializing Sensor", CoreS3.Display.width()/2, 80);
     
-    // Robust sensor initialization with multiple retries
+    // More robust sensor initialization
+    Wire.end();  // Completely reset I2C
+    delay(100);
+    Wire.begin(2, 1, 100000);  // Initialize I2C with standard speed
+    delay(100);
+    
     int retryCount = 0;
     bool sensorInitialized = false;
-    const int MAX_RETRIES = 5;  // Increased from 3 to 5 retries
+    const int MAX_RETRIES = 5;
     
     while (!sensorInitialized && retryCount < MAX_RETRIES) {
-        // Complete I2C reset
-        Wire.end();
-        delay(100);  // Increased delay for better stability
-        
-        // Initialize I2C with lower speed for stability
-        Wire.begin(2, 1, 50000);  // Reduced from 100000 to 50000 Hz
-        delay(250);
-        
         CoreS3.Display.fillRect(0, 120, CoreS3.Display.width(), 30, COLOR_BACKGROUND);
         CoreS3.Display.drawString("Attempt " + String(retryCount + 1) + "/" + String(MAX_RETRIES), 
                                 CoreS3.Display.width()/2, 120);
         
+        // Try to initialize sensor
         if (ncir2.begin(&Wire, 2, 1, M5UNIT_NCIR2_DEFAULT_ADDR)) {
-            // Additional verification step
-            delay(100);
+            delay(100);  // Give sensor time to stabilize
+            
+            // Verify sensor is responding correctly
             int16_t testTemp = ncir2.getTempValue();
-            if (testTemp != 0 && testTemp > -1000 && testTemp < 10000) {  // Basic sanity check
+            if (testTemp != 0 && testTemp > -1000 && testTemp < 10000) {
                 sensorInitialized = true;
                 ncir2.setEmissivity(currentEmissivity);
-                
-                // Reset sensor configuration
-                ncir2.setConfig();
-                delay(100);  // Allow config to settle
-                
-                // Double-check configuration
-                if (ncir2.getTempValue() != 0) {
-                    break;  // Successfully initialized
-                }
+                break;
             }
         }
         
         retryCount++;
-        delay(500);  // Increased delay between retries
+        delay(500);
+        
+        // Reset I2C bus on every other attempt
+        if (retryCount % 2 == 0) {
+            Wire.end();
+            delay(100);
+            Wire.begin(2, 1, 100000);
+            delay(100);
+        }
+    }
+    
+    if (!sensorInitialized) {
+        CoreS3.Display.fillScreen(COLOR_BACKGROUND);
+        CoreS3.Display.setTextColor(COLOR_HOT);
+        CoreS3.Display.drawString("Sensor Failed!", CoreS3.Display.width()/2, 60);
+        CoreS3.Display.drawString("Please:", CoreS3.Display.width()/2, 100);
+        CoreS3.Display.drawString("1. Check connections", CoreS3.Display.width()/2, 130);
+        CoreS3.Display.drawString("2. Power cycle device", CoreS3.Display.width()/2, 160);
+        while(1) {
+            if (CoreS3.Touch.getCount() || CoreS3.Power.isCharging()) {
+                ESP.restart();
+            }
+            delay(100);
+        }
     }
     
     if (!sensorInitialized) {
@@ -1027,7 +1071,8 @@ void loop() {
     // Handle temperature monitoring if active
     if (isMonitoring) {
         if (currentMillis - lastTempCheck >= TEMP_CHECK_INTERVAL) {
-            updateTemperatureDisplay();
+            currentTemp = ncir2.getTempValue();  // Get current temperature
+            updateTemperatureDisplay(currentTemp);
             lastTempCheck = currentMillis;
         }
     }
@@ -1096,7 +1141,7 @@ void loop() {
 
     // Handle low battery warning
     if (CoreS3.Power.getBatteryLevel() <= 20 && !lowBatteryWarningShown) {
-        showLowBatteryWarning();
+        showLowBatteryWarning(CoreS3.Power.getBatteryLevel());
     }
 
     // Update status message periodically
@@ -1116,3 +1161,11 @@ void loop() {
         }
     #endif
 }
+
+#ifdef DEBUG_MODE
+void printDebugInfo() {
+    Serial.printf("Battery: %d%%\n", CoreS3.Power.getBatteryLevel());
+    Serial.printf("Temperature: %.2f°C\n", currentTemp/100.0);
+    Serial.printf("Memory: %d bytes\n", ESP.getFreeHeap());
+}
+#endif
