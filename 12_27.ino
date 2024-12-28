@@ -109,13 +109,16 @@ int brightness = 64;  // Default brightness
 bool autoSleep = true;
 int sleepTimeout = 5;  // In minutes
 
-// Timing variables
-unsigned long lastTempCheck = 0;
-unsigned long lastBatteryCheck = 0;
-unsigned long lastTouch = 0;
-unsigned long lastStatusUpdate = 0;
-unsigned long lastActivityTime = 0;
+
+
+// State tracking variables
+unsigned long lastTempUpdate = 0;
+unsigned long lastBatteryUpdate = 0;
 unsigned long lastDebugUpdate = 0;
+unsigned long lastActivityTime = 0;
+
+
+const unsigned long BATTERY_UPDATE_INTERVAL = 5000; // 5s
 
 // Intervals
 const unsigned long TEMP_CHECK_INTERVAL = 1000;    // 1 second
@@ -150,6 +153,7 @@ struct Button {
 Button monitorBtn = {0, 0, 0, 0, "Monitor", false, true};
 Button emissivityBtn = {0, 0, 0, 0, "Emissivity", false, true};
 Button settingsBtn = {0, 0, 0, 0, "⚙", false, true};  // Settings button
+static LGFX_Sprite* tempSprite = nullptr;  // Make it a pointer so we can delete it
 
 // At the top of your file, add:
 //#define DEBUG_MODE  // Uncomment this line to enable debug output
@@ -186,8 +190,30 @@ void enterSleepMode();
 void enterEmissivityMode();
 void updateStatusMessage();
 void checkForErrors();
+void wakeUp();
 
-// Add this function to your code:
+void wakeUp() {
+    // Restore display
+    CoreS3.Display.wakeup();
+    CoreS3.Display.setBrightness((brightness * 255) / 100);
+    
+    // Reset activity timer
+    lastActivityTime = millis();
+    
+    // Redraw interface
+    drawInterface();
+    updateTemperatureDisplay(ncir2.getTempValue());
+    
+    // Restore monitoring state and status
+    if (isMonitoring) {
+        handleTemperatureAlerts();
+    } else {
+        updateStatusDisplay("Ready", COLOR_TEXT);
+    }
+    
+    // Update battery status
+    drawBatteryStatus();
+}
 void printDebugInfo() {
     Serial.println("=== Debug Info ===");
     Serial.print("Temperature: "); Serial.println(currentTemp / 100.0);
@@ -220,8 +246,22 @@ void enterEmissivityMode() {
     adjustEmissivity();
 }
 void enterSleepMode() {
-    CoreS3.Display.setBrightness(0);
-    // Add any other sleep mode logic
+    // Save current state before sleeping
+    ncir2.setLEDColor(0);  // Turn off LED
+    CoreS3.Display.setBrightness(0);  // Turn off display
+    CoreS3.Display.sleep();  // Put display to sleep
+    
+    // Wait for touch to wake up
+    while (true) {
+        CoreS3.update();  // Keep updating the core
+        auto touch = CoreS3.Touch.getDetail();
+        
+        if (touch.wasPressed()) {
+            wakeUp();
+            break;
+        }
+        delay(100);  // Small delay to prevent tight polling
+    }
 }
 void loadSettings() {
     preferences.begin("settings", false);
@@ -252,7 +292,9 @@ void handleSettingsMenu() {
         int selectedItem = itemY / MENU_ITEM_HEIGHT;
         
         if (selectedItem >= 0 && selectedItem < MENU_ITEMS) {
-            CoreS3.Speaker.tone(1000, AUDIO_FEEDBACK_DURATION);
+            if (soundEnabled) {
+                CoreS3.Speaker.tone(1000, AUDIO_FEEDBACK_DURATION);
+            }
             
             switch (selectedItem) {
                 case 0:  // Sound
@@ -261,6 +303,7 @@ void handleSettingsMenu() {
                     
                 case 1:  // Brightness
                     brightness = (brightness + 32) % 256;
+                    if (brightness < 32) brightness = 32;  // Minimum brightness
                     CoreS3.Display.setBrightness(brightness);
                     break;
                     
@@ -273,6 +316,7 @@ void handleSettingsMenu() {
                     return;
             }
             drawSettingsMenu();  // Redraw to show changes
+            saveSettings();      // Save changes immediately
         }
     }
 }
@@ -282,68 +326,32 @@ bool isButtonPressed(Button &btn, int16_t x, int16_t y) {
 }
 void exitSettingsMenu() {
     inSettingsMenu = false;
-    drawInterface();  // Make sure this fully redraws the main interface
-    updateTemperatureDisplay(ncir2.getTempValue());  // Update the temperature display
-    updateStatusDisplay(isMonitoring ? "Monitoring..." : "Ready", 
-                       isMonitoring ? COLOR_GOOD : COLOR_TEXT);  // Update status
+    drawInterface();  // Redraw the main interface
+    updateTemperatureDisplay(ncir2.getTempValue());  // Update temperature display
+    
+    // Instead of setting a fixed status, let handleTemperatureAlerts determine the proper status
+    if (isMonitoring) {
+        handleTemperatureAlerts();  // This will set the correct temperature-based status
+    } else {
+        updateStatusDisplay("Ready", COLOR_TEXT);  // Only show "Ready" when not monitoring
+    }
+    
+    drawBatteryStatus();  // Make sure battery status is current
 }
 void enterSettingsMenu() {
     inSettingsMenu = true;
-    selectedMenuItem = 0;
     drawSettingsMenu();
 }
-void handleSettingsTouch() {
-    auto t = CoreS3.Touch.getDetail();
-    if(t.wasPressed()) {
-        int touchY = t.y;
-        int itemIndex = (touchY - HEADER_HEIGHT - 20) / 45;
-        
-        if(itemIndex >= 0 && itemIndex < MENU_ITEMS) {
-            selectedMenuItem = itemIndex;
-            bool needsRedraw = true;  // Track if we need to redraw
-            
-            switch(itemIndex) {
-                case 0:  // Temperature Unit
-                    useCelsius = !useCelsius;
-                    break;
-                    
-                case 1: {  // Brightness
-                    int currentBrightness = (CoreS3.Display.getBrightness() * 100) / 255;
-                    int newBrightness;
-                    if(currentBrightness < 25) newBrightness = 64;
-                    else if(currentBrightness < 50) newBrightness = 128;
-                    else if(currentBrightness < 75) newBrightness = 192;
-                    else newBrightness = 255;
-                    CoreS3.Display.setBrightness(newBrightness);
-                    break;
-                }
-                    
-                case 2:  // Auto-off Timer
-                    if(autoOffTimer == 1) autoOffTimer = 5;
-                    else if(autoOffTimer == 5) autoOffTimer = 10;
-                    else if(autoOffTimer == 10) autoOffTimer = 0;
-                    else autoOffTimer = 1;
-                    break;
-                    
-                case 3:  // Back
-                    exitSettingsMenu();
-                    needsRedraw = false;  // exitSettingsMenu handles redraw
-                    break;
-            }
-            
-            if(needsRedraw) {
-                drawSettingsMenu();
-            }
-        }
-    }
-}
 void drawSettingsMenu() {
-    CoreS3.Display.fillScreen(COLOR_BACKGROUND);
+    // Clear entire screen except header
+    CoreS3.Display.fillRect(0, HEADER_HEIGHT, CoreS3.Display.width(), 
+                           CoreS3.Display.height() - HEADER_HEIGHT, COLOR_BACKGROUND);
     
-    // Draw header
-    CoreS3.Display.setTextColor(COLOR_TEXT);
+    // Draw settings title
     CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString("Settings", CoreS3.Display.width()/2, 20);
+    CoreS3.Display.setTextDatum(top_center);
+    CoreS3.Display.setTextColor(COLOR_TEXT);
+    CoreS3.Display.drawString("Settings", CoreS3.Display.width()/2, HEADER_HEIGHT + MARGIN);
     
     // Menu items
     const char* menuItems[] = {
@@ -705,20 +713,21 @@ void adjustEmissivity() {
     lastStatus = "";
 }
 void updateTemperatureDisplay(int16_t temp) {
-    static LGFX_Sprite tempSprite(&CoreS3.Display);  // Create sprite for temperature display
-    static bool spriteInitialized = false;
-    
-    // Initialize sprite once
-    if (!spriteInitialized) {
-        tempSprite.createSprite(200, 50);  // Create sprite with enough size for temperature
-        spriteInitialized = true;
+    if (inSettingsMenu) {
+        return;  // Don't update temperature when in settings
+    }
+
+    // Initialize sprite if needed
+    if (!tempSprite) {
+        tempSprite = new LGFX_Sprite(&CoreS3.Display);
+        tempSprite->createSprite(200, 50);
     }
     
     // Prepare the sprite
-    tempSprite.fillSprite(COLOR_BACKGROUND);
-    tempSprite.setTextDatum(middle_center);
-    tempSprite.setTextSize(5);
-    tempSprite.setTextColor(COLOR_TEXT);
+    tempSprite->fillSprite(COLOR_BACKGROUND);
+    tempSprite->setTextDatum(middle_center);
+    tempSprite->setTextSize(5);
+    tempSprite->setTextColor(COLOR_TEXT);
     
     // Format temperature string - direct conversion to whole number
     float displayTemp = temp / 100.0;
@@ -732,15 +741,15 @@ void updateTemperatureDisplay(int16_t temp) {
     }
     
     // Draw to sprite
-    tempSprite.drawString(tempStr, tempSprite.width()/2, tempSprite.height()/2);
+    tempSprite->drawString(tempStr, tempSprite->width()/2, tempSprite->height()/2);
     
     // Calculate position for sprite
     int tempBoxY = HEADER_HEIGHT + MARGIN;
-    int spriteX = (CoreS3.Display.width() - tempSprite.width()) / 2;
-    int spriteY = tempBoxY + (TEMP_BOX_HEIGHT - tempSprite.height()) / 2;
+    int spriteX = (CoreS3.Display.width() - tempSprite->width()) / 2;
+    int spriteY = tempBoxY + (TEMP_BOX_HEIGHT - tempSprite->height()) / 2;
     
     // Push sprite to display
-    tempSprite.pushSprite(spriteX, spriteY);
+    tempSprite->pushSprite(spriteX, spriteY);
 }
 bool touchInButton(Button btn, int16_t x, int16_t y) {
     return (x >= btn.x && x < (btn.x + btn.w) &&
@@ -1101,7 +1110,7 @@ void setup() {
     drawBatteryStatus();
 }
 void loop() {
-    CoreS3.update();
+    CoreS3.update();  // Essential for Core functionality
     unsigned long currentMillis = millis();
 
     // Handle auto sleep if enabled
@@ -1110,108 +1119,64 @@ void loop() {
         return;
     }
 
-    // Check if in settings menu
-    if (inSettingsMenu) {
-        handleSettingsMenu();
-        return;
-    }
-
-    // Update battery status periodically
-    if (currentMillis - lastBatteryCheck >= BATTERY_CHECK_INTERVAL) {
-        drawBatteryStatus();
-        lastBatteryCheck = currentMillis;
-    }
-
-    // Always update temperature in real-time
-    currentTemp = ncir2.getTempValue();
-    updateTemperatureDisplay(currentTemp);
-    
-    if (isMonitoring) {
-        handleTemperatureAlerts();
-    }
-
-    // Touch handling with improved responsiveness
-    auto touched = CoreS3.Touch.getDetail();
-    bool touchHandled = false;
-
-    if (touched.wasPressed()) {
-        if (currentMillis - lastTouch >= TOUCH_DEBOUNCE) {  // Using reduced 100ms debounce
-            lastActivityTime = currentMillis;  // Reset sleep timer
-            
-            // Monitor button
-            if (touchInButton(monitorBtn, touched.x, touched.y)) {
-                monitorBtn.highlighted = true;
-                drawButton(monitorBtn, COLOR_BUTTON_ACTIVE);
-                toggleMonitoring();
-                if (soundEnabled) {
-                    CoreS3.Speaker.tone(1000, AUDIO_FEEDBACK_DURATION);
-                }
-                touchHandled = true;
-            }
-
-            // Emissivity button
-            else if (touchInButton(emissivityBtn, touched.x, touched.y)) {
-                emissivityBtn.highlighted = true;
-                drawButton(emissivityBtn, COLOR_BUTTON_ACTIVE);
-                enterEmissivityMode();
-                if (soundEnabled) {
-                    CoreS3.Speaker.tone(1000, AUDIO_FEEDBACK_DURATION);
-                }
-                touchHandled = true;
-            }
-
-            // Settings button (top right)
-            else if (touchInButton(settingsBtn, touched.x, touched.y)) {
-                settingsBtn.highlighted = true;
-                drawButton(settingsBtn, COLOR_BUTTON_ACTIVE);
-                enterSettingsMenu();
-                if (soundEnabled) {
-                    CoreS3.Speaker.tone(1000, AUDIO_FEEDBACK_DURATION);
-                }
-                touchHandled = true;
-            }
-
-            if (touchHandled) {
-                lastTouch = currentMillis;
-            }
-        }
-    }
-    else if (touched.wasReleased()) {
-        // Immediate response on release
-        if (monitorBtn.highlighted) {
-            monitorBtn.highlighted = false;
-            drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
-        }
-        if (emissivityBtn.highlighted) {
-            emissivityBtn.highlighted = false;
-            drawButton(emissivityBtn, COLOR_BUTTON);
-        }
-        if (settingsBtn.highlighted) {
-            settingsBtn.highlighted = false;
-            drawButton(settingsBtn, COLOR_BUTTON);
-        }
-    }
-
-    // Handle low battery warning
-    if (CoreS3.Power.getBatteryLevel() <= 20 && !lowBatteryWarningShown) {
-        showLowBatteryWarning(CoreS3.Power.getBatteryLevel());
-        lowBatteryWarningShown = true;
-    }
-
-    // Reset low battery warning flag if battery level improves or charging
-    if (CoreS3.Power.getBatteryLevel() > 20 || CoreS3.Power.isCharging()) {
-        lowBatteryWarningShown = false;
-    }
-
-    // Update status message periodically
-    if (currentMillis - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
+    // Update temperature readings at regular intervals
+    if (currentMillis - lastTempUpdate >= TEMP_UPDATE_INTERVAL) {
+        currentTemp = ncir2.getTempValue();
+        updateTemperatureDisplay(currentTemp);
         if (isMonitoring) {
             handleTemperatureAlerts();
         }
-        lastStatusUpdate = currentMillis;
+        lastTempUpdate = currentMillis;
     }
 
-    // Optional: Debug information
+// Handle touch events
+    auto t = CoreS3.Touch.getDetail();
+    if (t.wasPressed()) {
+        lastActivityTime = currentMillis;  // Reset sleep timer on any touch
+        
+        if (inSettingsMenu) {
+            handleSettingsMenu();  // Changed from handleSettingsTouch() to handleSettingsMenu()
+        } else {
+            // Check if settings button was pressed
+            if (touchInButton(settingsBtn, t.x, t.y)) {
+                if (soundEnabled) {
+                    CoreS3.Speaker.tone(1000, 100);
+                }
+                enterSettingsMenu();
+            }
+            // Check if monitor button was pressed
+            else if (touchInButton(monitorBtn, t.x, t.y)) {
+                isMonitoring = !isMonitoring;
+                if (soundEnabled) {
+                    CoreS3.Speaker.tone(1000, 100);
+                }
+                drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
+                if (!isMonitoring) {
+                    ncir2.setLEDColor(0);  // Turn off LED when monitoring stops
+                    updateStatusDisplay("Ready", COLOR_TEXT);
+                }
+            }
+            // Check if emissivity button was pressed
+            else if (touchInButton(emissivityBtn, t.x, t.y)) {
+                if (soundEnabled) {
+                    CoreS3.Speaker.tone(1000, 100);
+                }
+                currentEmissivity += 0.05f;
+                if (currentEmissivity > 1.0f) {
+                    currentEmissivity = 0.95f;
+                }
+                ncir2.setEmissivity(currentEmissivity);
+                enterEmissivityMode();  // Changed to use your existing function
+            }
+        }
+    }
+
+    // Update battery status at regular intervals
+    if (currentMillis - lastBatteryUpdate >= BATTERY_UPDATE_INTERVAL) {
+        drawBatteryStatus();
+        lastBatteryUpdate = currentMillis;
+    }
+
     #ifdef DEBUG_MODE
         if (currentMillis - lastDebugUpdate >= DEBUG_INTERVAL) {
             printDebugInfo();
