@@ -215,7 +215,7 @@ void drawSlider(int x, int y, int width, int value) {
     CoreS3.Display.drawRoundRect(x, y, width, sliderHeight, sliderHeight/2, COLOR_TEXT);
     
     int fillWidth = (value * width) / 255;
-    CoreS3.Display.fillRoundRect(x, y, fillWidth, sliderHeight, sliderHeight/2, COLOR_BUTTON);
+    CoreS3.Display.fillRoundRect(x, y, fillWidth, sliderHeight, sliderHeight/2, COLOR_BATTERY_MED);
     
     CoreS3.Display.setTextDatum(middle_center);
     CoreS3.Display.setTextSize(1);
@@ -415,13 +415,13 @@ void enterSettingsMenu() {
     drawSettingsMenu();
 }
 void drawSettingsMenu() {
-    // Clear entire screen except header
+    // Clear screen and draw header
     CoreS3.Display.fillScreen(COLOR_BACKGROUND);
-    
-    // Draw settings title with better styling
     CoreS3.Display.fillRect(0, 0, CoreS3.Display.width(), HEADER_HEIGHT, COLOR_BUTTON);
-    CoreS3.Display.setTextSize(2);
+    
+    // Reset text settings
     CoreS3.Display.setTextDatum(middle_center);
+    CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextColor(COLOR_TEXT);
     CoreS3.Display.drawString("Settings", CoreS3.Display.width()/2, HEADER_HEIGHT/2);
     
@@ -433,14 +433,50 @@ void drawSettingsMenu() {
         "Exit"
     };
     
-    // Calculate menu item positions and sizes
+    // Adjusted dimensions for better spacing
     int menuStartY = HEADER_HEIGHT + 10;
-    int itemHeight = 70;  // Slightly reduced height
-    int itemPadding = 8;  // Slightly reduced padding
+    int itemHeight = 65;  // Reduced height
+    int itemPadding = 5;  // Reduced padding
     int menuWidth = CoreS3.Display.width() - (2 * MARGIN) - 45;
     int textPaddingLeft = 30;
     
-    // Add scroll buttons
+    // Draw visible menu items
+    for (int i = 0; i < VISIBLE_ITEMS && (i + settingsScrollPosition) < MENU_ITEMS; i++) {
+        int currentItem = i + settingsScrollPosition;
+        int itemY = menuStartY + (i * (itemHeight + itemPadding));
+        
+        // Menu item background
+        uint32_t bgColor = (currentItem == selectedMenuItem) ? COLOR_BUTTON : COLOR_BACKGROUND;
+        CoreS3.Display.fillRoundRect(MARGIN, itemY, menuWidth, itemHeight, 10, bgColor);
+        CoreS3.Display.drawRoundRect(MARGIN, itemY, menuWidth, itemHeight, 10, COLOR_TEXT);
+        
+        // Menu item text - ensure left alignment
+        CoreS3.Display.setTextDatum(middle_left);
+        CoreS3.Display.setTextSize(2);
+        CoreS3.Display.drawString(menuItems[currentItem], 
+                                MARGIN + textPaddingLeft,
+                                itemY + (itemHeight/2));
+        
+        // Draw controls
+        if (currentItem < 3) {  // Only draw controls for non-exit items
+            int valueX = CoreS3.Display.width() - MARGIN - 140;
+            int controlCenterY = itemY + (itemHeight/2);
+            
+            switch (currentItem) {
+                case 0:  // Sound
+                    drawToggleSwitch(valueX, controlCenterY - 15, soundEnabled);
+                    break;
+                case 1:  // Brightness
+                    drawSlider(valueX, controlCenterY - 10, 80, brightness);
+                    break;
+                case 2:  // Auto Sleep
+                    drawToggleSwitch(valueX, controlCenterY - 15, autoSleep);
+                    break;
+            }
+        }
+    }
+    
+    // Draw scroll buttons if needed
     if (settingsScrollPosition > 0) {
         CoreS3.Display.fillRoundRect(CoreS3.Display.width() - 40, HEADER_HEIGHT + 5, 
                                    30, 30, 5, COLOR_BUTTON);
@@ -454,51 +490,14 @@ void drawSettingsMenu() {
     
     if (settingsScrollPosition + VISIBLE_ITEMS < MENU_ITEMS) {
         CoreS3.Display.fillRoundRect(CoreS3.Display.width() - 40, 
-                                   CoreS3.Display.height() - 45,  // Moved up slightly
+                                   CoreS3.Display.height() - 45,
                                    30, 30, 5, COLOR_BUTTON);
         CoreS3.Display.fillTriangle(
-            CoreS3.Display.width() - 25, CoreS3.Display.height() - 25,
-            CoreS3.Display.width() - 35, CoreS3.Display.height() - 15,
-            CoreS3.Display.width() - 15, CoreS3.Display.height() - 15,
+            CoreS3.Display.width() - 25, CoreS3.Display.height() - 35,
+            CoreS3.Display.width() - 35, CoreS3.Display.height() - 25,
+            CoreS3.Display.width() - 15, CoreS3.Display.height() - 25,
             COLOR_TEXT
         );
-    }
-    
-    // Draw visible menu items
-    for (int i = 0; i < VISIBLE_ITEMS && (i + settingsScrollPosition) < MENU_ITEMS; i++) {
-        int currentItem = i + settingsScrollPosition;
-        int itemY = menuStartY + (i * (itemHeight + itemPadding));
-        
-        // Draw menu item background
-        uint32_t bgColor = (currentItem == selectedMenuItem) ? COLOR_BUTTON : COLOR_BACKGROUND;
-        CoreS3.Display.fillRoundRect(MARGIN, itemY, menuWidth, itemHeight, 10, bgColor);
-        CoreS3.Display.drawRoundRect(MARGIN, itemY, menuWidth, itemHeight, 10, COLOR_TEXT);
-        
-        // Draw menu item text
-        CoreS3.Display.setTextSize(2);
-        CoreS3.Display.setTextColor(COLOR_TEXT);
-        CoreS3.Display.setTextDatum(middle_left);
-        CoreS3.Display.drawString(menuItems[currentItem], 
-                                MARGIN + textPaddingLeft,
-                                itemY + (itemHeight/2));
-        
-        // Draw controls
-        int valueX = CoreS3.Display.width() - MARGIN - 140;
-        int controlCenterY = itemY + (itemHeight/2);
-        
-        switch (currentItem) {
-            case 0:  // Sound
-                drawToggleSwitch(valueX, controlCenterY - 15, soundEnabled);
-                break;
-                
-            case 1:  // Brightness
-                drawSlider(valueX, controlCenterY - 10, 80, brightness);
-                break;
-                
-            case 2:  // Auto Sleep
-                drawToggleSwitch(valueX, controlCenterY - 15, autoSleep);
-                break;
-        }
     }
 }
 void checkBatteryWarning(unsigned long currentMillis) {
@@ -929,52 +928,45 @@ void drawBatteryStatus() {
     }
 }
 void drawInterface() {
-    // Clear entire screen
+    // Clear screen and reset text settings
     CoreS3.Display.fillScreen(COLOR_BACKGROUND);
+    CoreS3.Display.setTextDatum(middle_center);
     
     // Calculate dimensions
     int screenWidth = CoreS3.Display.width();
     int screenHeight = CoreS3.Display.height();
     int contentWidth = screenWidth - (2 * MARGIN);
     
-    // Draw header area
-    CoreS3.Display.fillRect(0, 0, screenWidth, HEADER_HEIGHT, COLOR_BACKGROUND);
-    
-    // Draw title - reset text alignment
-    CoreS3.Display.setTextDatum(middle_left);  // Changed to left alignment
+    // Draw title
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextColor(COLOR_TEXT);
-    CoreS3.Display.drawString("Terp Timer", MARGIN + 10, HEADER_HEIGHT/2);  // Adjusted position
+    CoreS3.Display.drawString("Terp Timer", 70, HEADER_HEIGHT/2);
     
     // Temperature display box
     int tempBoxY = HEADER_HEIGHT + MARGIN;
     CoreS3.Display.drawRoundRect(MARGIN, tempBoxY, contentWidth, TEMP_BOX_HEIGHT, 8, COLOR_TEXT);
     
-    // Status box and buttons
+    // Status box
     int buttonY = screenHeight - BUTTON_HEIGHT - MARGIN;
     int statusBoxY = buttonY - STATUS_BOX_HEIGHT - MARGIN;
     CoreS3.Display.drawRoundRect(MARGIN, statusBoxY, contentWidth, STATUS_BOX_HEIGHT, 8, COLOR_TEXT);
     
-    // Update button positions
+    // Button positions
     int buttonWidth = (contentWidth - BUTTON_SPACING) / 2;
     monitorBtn = {MARGIN, buttonY, buttonWidth, BUTTON_HEIGHT, "Monitor", false, true};
     emissivityBtn = {MARGIN + buttonWidth + BUTTON_SPACING, buttonY, buttonWidth, BUTTON_HEIGHT, "Emissivity", false, true};
-    
-    // Position settings button in top right, before battery
     settingsBtn = {screenWidth - 115, 5, 30, 20, "⚙", false, true};
     
-    // Draw all buttons
+    // Draw buttons
+    CoreS3.Display.setTextDatum(middle_center);  // Ensure centered text for buttons
     drawButton(settingsBtn, COLOR_BUTTON);
     drawButton(emissivityBtn, COLOR_BUTTON);
     drawButton(monitorBtn, isMonitoring ? COLOR_BUTTON_ACTIVE : COLOR_BUTTON);
     
-    // Draw battery status
+    // Battery status
     drawBatteryStatus();
     
-    // Reset text alignment to center for other functions
-    CoreS3.Display.setTextDatum(middle_center);
-    
-    // Update status display
+    // Status text
     updateStatusDisplay(isMonitoring ? "Monitoring..." : "Ready", 
                        isMonitoring ? COLOR_GOOD : COLOR_TEXT);
 }
