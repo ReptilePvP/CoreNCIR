@@ -347,15 +347,16 @@ void handleSettingsMenu() {
     int startY = HEADER_HEIGHT + MARGIN;
     int visibleHeight = CoreS3.Display.height() - startY - MARGIN;
     int maxScroll = max(0, (MenuConfig::MENU_ITEMS * itemHeight) - visibleHeight);
+    state.settingsScrollPosition = min(state.settingsScrollPosition, maxScroll);  // Add bounds check
     
     // Handle scrolling
     if (t.y < startY && state.settingsScrollPosition > 0) {
-        playTouchSound();
+        playTouchSound(true);
         state.settingsScrollPosition = max(0, state.settingsScrollPosition - itemHeight);
         drawSettingsMenu();
         return;
     } else if (t.y > CoreS3.Display.height() - MARGIN && state.settingsScrollPosition < maxScroll) {
-        playTouchSound();
+        playTouchSound(true);
         state.settingsScrollPosition = min(maxScroll, state.settingsScrollPosition + itemHeight);
         drawSettingsMenu();
         return;
@@ -377,7 +378,7 @@ void handleSettingsMenu() {
                 const int levels[4] = {64, 128, 192, 255};  // 25%, 50%, 75%, 100%
                 settings.brightness = levels[btnIndex];
                 CoreS3.Display.setBrightness(settings.brightness);
-                playTouchSound();
+                playTouchSound(true);
                 saveSettings();
                 drawSettingsMenu();
                 return;
@@ -388,24 +389,24 @@ void handleSettingsMenu() {
         switch (touchedItem) {
             case 0:  // Temperature Unit
                 settings.useCelsius = !settings.useCelsius;
-                playTouchSound();
+                playTouchSound(true);
                 saveSettings();
                 break;
                 
             case 1:  // Sound
                 settings.soundEnabled = !settings.soundEnabled;
-                playTouchSound();
+                playTouchSound(true);
                 saveSettings();
                 break;
                 
             case 3:  // Auto Sleep
                 settings.autoSleep = !settings.autoSleep;
-                playTouchSound();
+                playTouchSound(true);
                 saveSettings();
                 break;
                 
             case 4: {  // Emissivity
-                playTouchSound();
+                playTouchSound(true);
                 float oldEmissivity = settings.emissivity;
                 adjustEmissivity();
                 if (oldEmissivity != settings.emissivity) {
@@ -416,88 +417,11 @@ void handleSettingsMenu() {
             }
                 
             case 5:  // Exit
-                playTouchSound();
+                playTouchSound(true);
                 exitSettingsMenu();
                 return;
         }
         drawSettingsMenu();
-    }
-}
-
-void drawSettingsMenu() {
-    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
-    
-    // Draw header
-    CoreS3.Display.fillRect(0, 0, CoreS3.Display.width(), HEADER_HEIGHT, DisplayConfig::COLOR_HEADER);
-    CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
-    CoreS3.Display.setTextDatum(middle_center);
-    CoreS3.Display.drawString("Settings", CoreS3.Display.width()/2, HEADER_HEIGHT/2);
-    
-    // Calculate visible area
-    int startY = HEADER_HEIGHT + MARGIN;
-    int visibleHeight = CoreS3.Display.height() - startY - MARGIN;
-    int maxScroll = max(0, (MenuConfig::MENU_ITEMS * 50) - visibleHeight);
-    
-    // Draw menu items
-    for (int i = 0; i < MenuConfig::MENU_ITEMS; i++) {
-        int itemY = startY + (i * 50) - state.settingsScrollPosition;
-        
-        // Skip if item is not visible
-        if (itemY + 50 < startY || itemY > CoreS3.Display.height() - MARGIN) continue;
-        
-        // Highlight selected item
-        if (i == state.selectedMenuItem) {
-            CoreS3.Display.fillRect(0, itemY, CoreS3.Display.width(), 50, DisplayConfig::COLOR_SELECTED);
-        }
-        
-        // Draw menu item text and controls
-        CoreS3.Display.setTextDatum(middle_left);
-        CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
-        CoreS3.Display.drawString(MenuConfig::MENU_LABELS[i], MARGIN, itemY + 25);
-        
-        switch(i) {
-            case 0:  // Temperature Unit
-                drawToggleSwitch(CoreS3.Display.width() - 70 - MARGIN, itemY + 10, settings.useCelsius);
-                break;
-                
-            case 1:  // Sound
-                drawToggleSwitch(CoreS3.Display.width() - 70 - MARGIN, itemY + 10, settings.soundEnabled);
-                break;
-                
-            case 2:  // Brightness
-                drawBrightnessButtons(CoreS3.Display.width() - 290, itemY + 5, settings.brightness);
-                break;
-                
-            case 3:  // Auto Sleep
-                drawToggleSwitch(CoreS3.Display.width() - 70 - MARGIN, itemY + 10, settings.autoSleep);
-                break;
-                
-            case 4:  // Emissivity
-                char emisStr[8];
-                sprintf(emisStr, "%.2f", settings.emissivity);
-                CoreS3.Display.setTextDatum(middle_right);
-                CoreS3.Display.drawString(emisStr, CoreS3.Display.width() - MARGIN, itemY + 25);
-                break;
-        }
-    }
-    
-    // Draw scroll indicators if needed
-    if (state.settingsScrollPosition > 0) {
-        CoreS3.Display.fillTriangle(
-            CoreS3.Display.width()/2 - 10, startY + 10,
-            CoreS3.Display.width()/2 + 10, startY + 10,
-            CoreS3.Display.width()/2, startY,
-            DisplayConfig::COLOR_TEXT
-        );
-    }
-    if (state.settingsScrollPosition < maxScroll) {
-        int y = CoreS3.Display.height() - MARGIN - 10;
-        CoreS3.Display.fillTriangle(
-            CoreS3.Display.width()/2 - 10, y,
-            CoreS3.Display.width()/2 + 10, y,
-            CoreS3.Display.width()/2, y + 10,
-            DisplayConfig::COLOR_TEXT
-        );
     }
 }
 
@@ -524,7 +448,7 @@ void updateTemperatureDisplay(int16_t temp) {
         tempSprite->fillSprite(DisplayConfig::COLOR_BACKGROUND);
         tempSprite->drawRoundRect(0, 0, boxWidth, boxHeight, 8, DisplayConfig::COLOR_TEXT);
         
-        // Format temperature string with one decimal place
+        // Format temperature string with whole numbers
         char tempStr[16];
         float displayTemp;
         
@@ -541,12 +465,14 @@ void updateTemperatureDisplay(int16_t temp) {
         tempSprite->setTextSize(4);
         tempSprite->setTextDatum(middle_center);
         
-        // Choose color based on temperature in Celsius
+        // Choose color based on temperature in Celsius for consistent behavior
         float tempC = settings.useCelsius ? displayTemp : (displayTemp - 32.0f) * 5.0f / 9.0f;
         uint32_t tempColor;
-        if (tempC < 20) tempColor = DisplayConfig::COLOR_COLD;
-        else if (tempC > 35) tempColor = DisplayConfig::COLOR_HOT;
-        else tempColor = DisplayConfig::COLOR_GOOD;
+        
+        // Adjusted temperature thresholds for terp meter application
+        if (tempC < 150) tempColor = DisplayConfig::COLOR_COLD;        // Below 150°C
+        else if (tempC > 200) tempColor = DisplayConfig::COLOR_HOT;    // Above 200°C
+        else tempColor = DisplayConfig::COLOR_GOOD;                    // 150-200°C is good range
         
         tempSprite->setTextColor(tempColor);
         tempSprite->drawString(tempStr, boxWidth/2, boxHeight/2);
@@ -557,6 +483,23 @@ void updateTemperatureDisplay(int16_t temp) {
         lastTemp = temp;
         lastUpdate = millis();
     }
+}
+
+void playTouchSound(bool success) {
+    if (!settings.soundEnabled) return;
+    
+    // Initialize speaker
+    CoreS3.Speaker.begin();
+    CoreS3.Speaker.setVolume(128);  // Set to 50% volume
+    
+    if (success) {
+        CoreS3.Speaker.tone(1000, 50);  // 1kHz for 50ms
+    } else {
+        CoreS3.Speaker.tone(500, 100);  // 500Hz for 100ms
+    }
+    
+    delay(50);  // Wait for sound to finish
+    CoreS3.Speaker.end();  // Cleanup speaker
 }
 
 void drawInterface() {
@@ -1052,16 +995,16 @@ void adjustEmissivity() {
                     if (tempEmissivity < EMISSIVITY_MAX) {
                         tempEmissivity += EMISSIVITY_STEP;
                         if (tempEmissivity > EMISSIVITY_MAX) tempEmissivity = EMISSIVITY_MAX;
-                        playTouchSound();
+                        playTouchSound(true);
                     }
                 } else if (touchInButton(downBtn, touched.x, touched.y)) {
                     if (tempEmissivity > EMISSIVITY_MIN) {
                         tempEmissivity -= EMISSIVITY_STEP;
                         if (tempEmissivity < EMISSIVITY_MIN) tempEmissivity = EMISSIVITY_MIN;
-                        playTouchSound();
+                        playTouchSound(true);
                     }
                 } else if (touchInButton(doneBtn, touched.x, touched.y)) {
-                    playTouchSound();
+                    playTouchSound(true);
                     adjusting = false;
                 }
                 delay(50);  // Debounce
@@ -1095,31 +1038,90 @@ void handleTouchInput() {
             handleSettingsMenu();
         } else {
             if (touchInButton(monitorBtn, t.x, t.y)) {
-                playTouchSound();
+                playTouchSound(true);
                 toggleMonitoring();
             } else if (touchInButton(settingsBtn, t.x, t.y)) {
-                playTouchSound();
+                playTouchSound(true);
                 enterSettingsMenu();
             }
         }
     }
 }
 
-void playTouchSound(bool success) {
-    if (!settings.soundEnabled) return;
+void drawSettingsMenu() {
+    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
     
-    if (success) {
-        CoreS3.Speaker.begin();
-        CoreS3.Speaker.setVolume(255);
-        CoreS3.Speaker.tone(880, 40);  // Higher pitch for positive feedback
-        delay(50);
-        CoreS3.Speaker.tone(1760, 20); // Even higher pitch for confirmation
-        CoreS3.Speaker.end();
-    } else {
-        CoreS3.Speaker.begin();
-        CoreS3.Speaker.setVolume(255);
-        CoreS3.Speaker.tone(220, 100); // Lower pitch for negative feedback
-        CoreS3.Speaker.end();
+    // Draw header
+    CoreS3.Display.fillRect(0, 0, CoreS3.Display.width(), HEADER_HEIGHT, DisplayConfig::COLOR_HEADER);
+    CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
+    CoreS3.Display.setTextDatum(middle_center);
+    CoreS3.Display.drawString("Settings", CoreS3.Display.width()/2, HEADER_HEIGHT/2);
+    
+    // Calculate visible area
+    int startY = HEADER_HEIGHT + MARGIN;
+    int visibleHeight = CoreS3.Display.height() - startY - MARGIN;
+    int maxScroll = max(0, (MenuConfig::MENU_ITEMS * 50) - visibleHeight);
+    
+    // Draw menu items
+    for (int i = 0; i < MenuConfig::MENU_ITEMS; i++) {
+        int itemY = startY + (i * 50) - state.settingsScrollPosition;
+        
+        // Skip if item is not visible
+        if (itemY + 50 < startY || itemY > CoreS3.Display.height() - MARGIN) continue;
+        
+        // Highlight selected item
+        if (i == state.selectedMenuItem) {
+            CoreS3.Display.fillRect(0, itemY, CoreS3.Display.width(), 50, DisplayConfig::COLOR_SELECTED);
+        }
+        
+        // Draw menu item text and controls
+        CoreS3.Display.setTextDatum(middle_left);
+        CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
+        CoreS3.Display.drawString(MenuConfig::MENU_LABELS[i], MARGIN, itemY + 25);
+        
+        switch(i) {
+            case 0:  // Temperature Unit
+                drawToggleSwitch(CoreS3.Display.width() - 70 - MARGIN, itemY + 10, settings.useCelsius);
+                break;
+                
+            case 1:  // Sound
+                drawToggleSwitch(CoreS3.Display.width() - 70 - MARGIN, itemY + 10, settings.soundEnabled);
+                break;
+                
+            case 2:  // Brightness
+                drawBrightnessButtons(CoreS3.Display.width() - 290, itemY + 5, settings.brightness);
+                break;
+                
+            case 3:  // Auto Sleep
+                drawToggleSwitch(CoreS3.Display.width() - 70 - MARGIN, itemY + 10, settings.autoSleep);
+                break;
+                
+            case 4:  // Emissivity
+                char emisStr[8];
+                sprintf(emisStr, "%.2f", settings.emissivity);
+                CoreS3.Display.setTextDatum(middle_right);
+                CoreS3.Display.drawString(emisStr, CoreS3.Display.width() - MARGIN, itemY + 25);
+                break;
+        }
+    }
+    
+    // Draw scroll indicators if needed
+    if (state.settingsScrollPosition > 0) {
+        CoreS3.Display.fillTriangle(
+            CoreS3.Display.width()/2 - 10, startY + 10,
+            CoreS3.Display.width()/2 + 10, startY + 10,
+            CoreS3.Display.width()/2, startY,
+            DisplayConfig::COLOR_TEXT
+        );
+    }
+    if (state.settingsScrollPosition < maxScroll) {
+        int y = CoreS3.Display.height() - MARGIN - 10;
+        CoreS3.Display.fillTriangle(
+            CoreS3.Display.width()/2 - 10, y,
+            CoreS3.Display.width()/2 + 10, y,
+            CoreS3.Display.width()/2, y + 10,
+            DisplayConfig::COLOR_TEXT
+        );
     }
 }
 
