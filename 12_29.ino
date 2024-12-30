@@ -533,7 +533,7 @@ void drawInterface() {
     
     // Draw current emissivity value in top-left
     char emisStr[32];
-    sprintf(emisStr, "ε: %.2f", settings.emissivity);
+    sprintf(emisStr, "E: %.2f", settings.emissivity);
     CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
     CoreS3.Display.setTextDatum(middle_left);
     CoreS3.Display.drawString(emisStr, MARGIN + 5, MARGIN + 15);
