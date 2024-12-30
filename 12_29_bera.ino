@@ -155,14 +155,14 @@ struct Button {
 void drawButton(Button &btn, uint32_t color);
 void drawInterface();
 void updateDisplay();
-void handleTemperatureAlerts();
+void updateStatus(const char* status, uint32_t color);
+void updateTemperatureStatus();
 void drawBatteryStatus();
 bool touchInButton(Button &btn, int32_t touch_x, int32_t touch_y);
 int32_t celsiusToFahrenheit(int32_t celsius);
 int32_t fahrenheitToCelsius(int32_t fahrenheit);
 void updateTemperatureDisplay(int32_t temp);
 void adjustEmissivity();
-void updateStatusDisplay(const char* status, uint32_t color);
 void showLowBatteryWarning(int batteryLevel);
 void handleTouchInput();
 void toggleMonitoring();
@@ -171,18 +171,18 @@ void handleSettingsMenu();
 void saveSettings();
 void loadSettings();
 void enterEmissivityMode();
-void updateStatusMessage();
 void checkForErrors();
-void wakeUp();
-void drawToggleSwitch(int x, int y, bool state);
-void showRestartConfirmation(float oldEmissivity, float newEmissivity);
-void exitSettingsMenu();
 void playTouchSound(bool success = true);
-void drawBrightnessButtons(int x, int y, int currentBrightness);
 void resetSettingsMenuState();
 void validateSettingsScroll();
 bool isTemperatureValid(float temp);
 bool debounceTouch();
+void drawBrightnessButtons(int x, int y, int currentBrightness);
+void drawToggleSwitch(int x, int y, bool state);
+void showRestartConfirmation(float oldEmissivity, float newEmissivity);
+void exitSettingsMenu();
+void showMessage(const char* title, const char* message, uint32_t color);
+bool selectTemperatureUnit();
 
 // Button declarations
 Button monitorBtn = {0, 0, 0, 0, "Monitor", false, true};
@@ -191,6 +191,76 @@ static LGFX_Sprite* tempSprite = nullptr;
 
 Settings settings;
 DeviceState state;
+
+bool touchInButton(Button &btn, int32_t touch_x, int32_t touch_y) {
+    // Add some padding to make buttons easier to press
+    const int padding = 5;
+    return (touch_x >= btn.x - padding && 
+            touch_x <= btn.x + btn.w + padding && 
+            touch_y >= btn.y - padding && 
+            touch_y <= btn.y + btn.h + padding);
+}
+
+bool selectTemperatureUnit() {
+    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
+    CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
+    CoreS3.Display.setTextSize(3);
+    CoreS3.Display.drawString("Select Unit", CoreS3.Display.width()/2, 40);
+    
+    // Landscape-optimized button positions
+    Button celsiusBtn = {20, 80, 130, 100, "C", false};    // Left side
+    Button fahrenheitBtn = {170, 80, 130, 100, "F", false}; // Right side
+    
+    CoreS3.Display.fillRoundRect(celsiusBtn.x, celsiusBtn.y, celsiusBtn.w, celsiusBtn.h, 8, DisplayConfig::COLOR_BUTTON);
+    CoreS3.Display.fillRoundRect(fahrenheitBtn.x, fahrenheitBtn.y, fahrenheitBtn.w, fahrenheitBtn.h, 8, DisplayConfig::COLOR_BUTTON);
+    
+    CoreS3.Display.setTextSize(4);  // Larger text for temperature units
+    CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
+    CoreS3.Display.drawString("C", celsiusBtn.x + celsiusBtn.w/2, celsiusBtn.y + celsiusBtn.h/2);
+    CoreS3.Display.drawString("F", fahrenheitBtn.x + fahrenheitBtn.w/2, fahrenheitBtn.y + fahrenheitBtn.h/2);
+    
+    // Add descriptive text below buttons
+    CoreS3.Display.setTextSize(2);
+    CoreS3.Display.drawString("Celsius", celsiusBtn.x + celsiusBtn.w/2, celsiusBtn.y + celsiusBtn.h + 20);
+    CoreS3.Display.drawString("Fahrenheit", fahrenheitBtn.x + fahrenheitBtn.w/2, fahrenheitBtn.y + fahrenheitBtn.h + 20);
+    
+    while (true) {
+        CoreS3.update();
+        auto touched = CoreS3.Touch.getDetail();
+        if (touched.wasPressed()) {
+            if (touchInButton(celsiusBtn, touched.x, touched.y)) {
+                return true;
+            }
+            if (touchInButton(fahrenheitBtn, touched.x, touched.y)) {
+                return false;
+            }
+        }
+        delay(10);
+    }
+}
+
+void drawBrightnessButtons(int x, int y, int currentBrightness) {
+    const int btnWidth = 60;
+    const int btnHeight = 40;
+    const int spacing = 10;
+    const int levels[4] = {64, 128, 192, 255};  // 25%, 50%, 75%, 100%
+    
+    for (int i = 0; i < 4; i++) {
+        int btnX = x + (btnWidth + spacing) * i;
+        bool isSelected = (currentBrightness >= levels[i] - 32 && currentBrightness <= levels[i] + 32);
+        
+        // Draw button
+        CoreS3.Display.fillRoundRect(btnX, y, btnWidth, btnHeight, 5, 
+            isSelected ? DisplayConfig::COLOR_BUTTON_ACTIVE : DisplayConfig::COLOR_BUTTON);
+        
+        // Draw percentage text
+        CoreS3.Display.setTextDatum(middle_center);
+        CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
+        char label[5];
+        sprintf(label, "%d%%", (levels[i] * 100) / 255);
+        CoreS3.Display.drawString(label, btnX + btnWidth/2, y + btnHeight/2);
+    }
+}
 
 bool debounceTouch() {
     static unsigned long lastTouchTime = 0;
@@ -204,16 +274,12 @@ bool debounceTouch() {
     return false;
 }
 
-bool touchInButton(Button &btn, int32_t touch_x, int32_t touch_y) {
-    // Add some padding to make buttons easier to press
-    const int padding = 5;
-    return (touch_x >= btn.x - padding && 
-            touch_x <= btn.x + btn.w + padding && 
-            touch_y >= btn.y - padding && 
-            touch_y <= btn.y + btn.h + padding);
-}
-
 bool isTemperatureValid(float temp) {
+    // Check for NaN and infinity values
+    if (isnan(temp) || isinf(temp)) {
+        return false;
+    }
+    
     // Convert to int32_t (keeping 2 decimal places)
     int32_t tempInt = temp * 100;
     return (tempInt >= TempConfig::MIN_VALID_TEMP && tempInt <= TempConfig::MAX_VALID_TEMP);
@@ -247,29 +313,6 @@ void resetSettingsMenuState() {
     state.selectedMenuItem = -1;
 }
 
-void wakeUp() {
-    // Restore display
-    CoreS3.Display.wakeup();
-    CoreS3.Display.setBrightness((settings.brightness * 255) / 100);
-    
-    // Reset activity timer
-    state.lastActivityTime = millis();
-    
-    // Redraw interface
-    drawInterface();
-    updateTemperatureDisplay(ncir2.getTempValue());
-    
-    // Restore monitoring state and status
-    if (state.isMonitoring) {
-        handleTemperatureAlerts();
-    } else {
-        updateStatusDisplay("Ready", DisplayConfig::COLOR_TEXT);
-    }
-    
-    // Update battery status
-    drawBatteryStatus();
-}
-
 void printDebugInfo() {
     Serial.println("=== Debug Info ===");
     Serial.print("Temperature: "); Serial.println(state.currentTemp / 100.0);
@@ -291,159 +334,48 @@ void checkForErrors() {
     int32_t testTemp = ncir2.getTempValue();
     if (testTemp == 0 || testTemp < -1000 || testTemp > 10000) {
         // Sensor communication error
-        updateStatusDisplay("Sensor Error", DisplayConfig::COLOR_HOT);
+        updateStatus("Sensor Error", DisplayConfig::COLOR_HOT);
     }
 }
 
-void updateStatusMessage() {
-    // This is already handled by updateStatusDisplay()
-    handleTemperatureAlerts();
-}
-
-void enterEmissivityMode() {
-    // This function already exists as adjustEmissivity()
-    adjustEmissivity();
-}
-
-void exitSettingsMenu() {
-    state.inSettingsMenu = false;
-    resetSettingsMenuState();
-    unsigned long now = millis();
-    state.lastActivityTime = now;
-    state.settingsExitTime = now;
+void updateStatus(const char* status, uint32_t color) {
+    if (state.inSettingsMenu) return;  // Don't update status in settings menu
     
-    // Reset monitoring state if it was on
-    if (state.isMonitoring) {
-        state.isMonitoring = !state.isMonitoring;
-    }
-    
-    // Clear screen and redraw full interface
-    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
-    drawInterface();
-    drawBatteryStatus();
-    updateTemperatureDisplay(state.currentTemp);  // This will also update the status
-}
-
-void loadSettings() {
-    settings.load(preferences);
-    // Apply loaded settings
-    CoreS3.Display.setBrightness(settings.brightness);
-}
-
-void saveSettings() {
-    settings.save(preferences);
-}
-
-void handleTouchInput() {
-    if (!CoreS3.Touch.getCount()) return;  // No touch detected
-    
-    auto t = CoreS3.Touch.getDetail();
-    if (!t.wasPressed()) return;  // Not a press event
-    
-    state.lastActivityTime = millis();
-    
-    if (state.inSettingsMenu) {
-        handleSettingsMenu();
-    } else {
-        if (touchInButton(monitorBtn, t.x, t.y)) {
-            playTouchSound(true);
-            toggleMonitoring();
-        } else if (touchInButton(settingsBtn, t.x, t.y)) {
-            playTouchSound(true);
-            enterSettingsMenu();
-        }
-    }
-}
-
-void updateTemperatureDisplay(int32_t temp) {
-    // Only update if temperature has changed
-    if (temp == state.lastDisplayTemp && !state.inSettingsMenu) {
-        return;
-    }
-    
-    state.lastDisplayTemp = temp;
-    
-    // Clear temperature display area
-    int tempBoxY = HEADER_HEIGHT + MARGIN;
-    CoreS3.Display.fillRect(MARGIN + 1, tempBoxY + 1, 
-                              CoreS3.Display.width() - (2 * MARGIN) - 2, 
-                              TEMP_BOX_HEIGHT - 2, 
-                              DisplayConfig::COLOR_BACKGROUND);
-    
-    // Format temperature string
-    char tempStr[32];
-    char unitStr[2] = {settings.useCelsius ? 'C' : 'F', '\0'};
-    float displayTemp;
-    uint32_t tempColor;
-    
-    if (settings.useCelsius) {
-        displayTemp = temp / 100.0f;  // Convert back to float
-        if (displayTemp < TempConfig::MIN_C / 100.0f) {
-            tempColor = DisplayConfig::COLOR_COLD;
-            ncir2.setLEDColor(DisplayConfig::COLOR_COLD);
-            updateStatusDisplay("Too Cold", DisplayConfig::COLOR_COLD);
-        } else if (displayTemp > TempConfig::MAX_C / 100.0f) {
-            tempColor = DisplayConfig::COLOR_HOT;
-            ncir2.setLEDColor(DisplayConfig::COLOR_HOT);
-            updateStatusDisplay("Too Hot", DisplayConfig::COLOR_HOT);
-        } else if (abs(displayTemp * 100 - TempConfig::TARGET_C) <= TempConfig::TOLERANCE_C) {
-            tempColor = DisplayConfig::COLOR_GOOD;
-            ncir2.setLEDColor(DisplayConfig::COLOR_GOOD);
-            updateStatusDisplay("Perfect", DisplayConfig::COLOR_GOOD);
-        } else {
-            tempColor = DisplayConfig::COLOR_WARNING;
-            ncir2.setLEDColor(DisplayConfig::COLOR_WARNING);
-            updateStatusDisplay("Getting Close", DisplayConfig::COLOR_WARNING);
-        }
-    } else {
-        // Convert to Fahrenheit for display
-        int32_t tempF = celsiusToFahrenheit(temp);
-        displayTemp = tempF / 100.0f;
+    // Convert const char* to String for comparison
+    if (String(status) != state.lastStatus) {
+        // Clear the status area
+        CoreS3.Display.fillRect(0, CoreS3.Display.height() - BUTTON_HEIGHT - STATUS_BOX_HEIGHT - (2 * MARGIN),
+                              CoreS3.Display.width(), STATUS_BOX_HEIGHT, DisplayConfig::COLOR_BACKGROUND);
         
-        if (displayTemp < 300.0f) {  // Below 300°F
-            tempColor = DisplayConfig::COLOR_COLD;
-            ncir2.setLEDColor(DisplayConfig::COLOR_COLD);
-            updateStatusDisplay("Too Cold", DisplayConfig::COLOR_COLD);
-        } else if (displayTemp > 640.0f) {  // Above 640°F
-            tempColor = DisplayConfig::COLOR_HOT;
-            ncir2.setLEDColor(DisplayConfig::COLOR_HOT);
-            updateStatusDisplay("Too Hot", DisplayConfig::COLOR_HOT);
-        } else if (displayTemp >= 500.0f && displayTemp <= 520.0f) {  // Perfect range
-            tempColor = DisplayConfig::COLOR_GOOD;
-            ncir2.setLEDColor(DisplayConfig::COLOR_GOOD);
-            updateStatusDisplay("Perfect", DisplayConfig::COLOR_GOOD);
-        } else {
-            tempColor = DisplayConfig::COLOR_WARNING;
-            ncir2.setLEDColor(DisplayConfig::COLOR_WARNING);
-            updateStatusDisplay("Getting Close", DisplayConfig::COLOR_WARNING);
-        }
+        // Draw new status
+        CoreS3.Display.setTextDatum(middle_center);
+        CoreS3.Display.setTextSize(1);
+        CoreS3.Display.setTextColor(color);
+        CoreS3.Display.drawString(status, CoreS3.Display.width() / 2,
+                                CoreS3.Display.height() - BUTTON_HEIGHT - (STATUS_BOX_HEIGHT / 2) - (2 * MARGIN));
+        
+        state.lastStatus = status;
     }
-    
-    // Format temperature with 1 decimal place
-    sprintf(tempStr, "%.1f°%s", displayTemp, unitStr);
-    
-    // Draw temperature
-    CoreS3.Display.setTextDatum(middle_center);
-    CoreS3.Display.setTextColor(tempColor);
-    CoreS3.Display.setTextSize(4);
-    CoreS3.Display.drawString(tempStr, CoreS3.Display.width()/2, HEADER_HEIGHT + MARGIN + (TEMP_BOX_HEIGHT/2));
 }
 
-void playTouchSound(bool success) {
-    if (!settings.soundEnabled) return;
+void updateTemperatureStatus() {
+    if (state.inSettingsMenu) return;  // Don't update status in settings menu
     
-    // Initialize speaker
-    CoreS3.Speaker.begin();
-    CoreS3.Speaker.setVolume(128);  // Set to 50% volume
-    
-    if (success) {
-        CoreS3.Speaker.tone(1000, 50);  // 1kHz for 50ms
+    int32_t displayTemp;
+    if (settings.useCelsius) {
+        displayTemp = state.currentTemp / 100;
     } else {
-        CoreS3.Speaker.tone(500, 100);  // 500Hz for 100ms
+        displayTemp = celsiusToFahrenheit(state.currentTemp) / 100;
     }
     
-    delay(50);  // Wait for sound to finish
-    CoreS3.Speaker.end();  // Cleanup speaker
+    // Check temperature ranges and update status accordingly
+    if (displayTemp < TempConfig::MIN_C || displayTemp > TempConfig::MAX_C) {
+        updateStatus("Temperature Out of Range", DisplayConfig::COLOR_WARNING);
+    } else if (abs(displayTemp - TempConfig::TARGET_C) > TempConfig::TOLERANCE_C) {
+        updateStatus("Temperature Not at Target", DisplayConfig::COLOR_WARNING);
+    } else {
+        updateStatus("Temperature Stable", DisplayConfig::COLOR_GOOD);
+    }
 }
 
 void drawInterface() {
@@ -484,16 +416,16 @@ void drawInterface() {
     
     // Update status display if not monitoring
     if (!state.isMonitoring) {
-        updateStatusDisplay("Ready", DisplayConfig::COLOR_TEXT);
+        updateStatus("Ready", DisplayConfig::COLOR_TEXT);
     }
 }
 
 void setup() {
     // Initialize M5Stack
-    auto cfg = M5.config();
-    CoreS3.begin(cfg);
+    CoreS3.begin();  // Use simpler initialization
     
     // Initialize display
+    CoreS3.Display.begin();
     CoreS3.Display.setRotation(1);  // Landscape mode
     CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
     CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
@@ -501,6 +433,7 @@ void setup() {
     
     // Initialize serial for debugging
     Serial.begin(115200);
+    Serial.println("Starting up...");
     
     // Initialize preferences
     preferences.begin("terpmeter", false);
@@ -508,21 +441,38 @@ void setup() {
     // Load settings
     loadSettings();
     
-    // Set initial brightness
-    CoreS3.Display.setBrightness(settings.brightness);
-    
     // Initialize I2C for NCIR2
     Wire.begin(2, 1);  // SDA = GPIO2, SCL = GPIO1
+    delay(100);  // Give I2C bus time to stabilize
     
     // Initialize NCIR2
-    if (!ncir2.begin(&Wire)) {
+    bool sensorInitialized = false;
+    for (int retries = 0; retries < 3; retries++) {
+        Serial.printf("Attempting sensor init (attempt %d)...\n", retries + 1);
+        if (ncir2.begin(&Wire, 2, 1, M5UNIT_NCIR2_DEFAULT_ADDR)) {
+            sensorInitialized = true;
+            Serial.println("Sensor initialized successfully!");
+            break;
+        }
+        Serial.println("Sensor init failed, retrying...");
+        delay(1000);  // Wait a second before retrying
+    }
+    
+    if (!sensorInitialized) {
         Serial.println("Failed to initialize NCIR2!");
-        showMessage("Error", "Sensor Init Failed", DisplayConfig::COLOR_ALERT);
-        delay(3000);
+        showMessage("Error", "Tap screen to retry", DisplayConfig::COLOR_ALERT);
+        while (1) {  // Halt program if sensor init fails
+            CoreS3.update();  // Keep the system responsive
+            if (CoreS3.Touch.getCount()) {  // Check for touch input
+                ESP.restart();  // Restart device
+            }
+            delay(100);  // Small delay to prevent tight loop
+        }
     }
     
     // Set initial emissivity
     ncir2.setEmissivity(settings.emissivity);
+    Serial.printf("Emissivity set to %.2f\n", settings.emissivity);
     
     // Calculate button positions
     int screenWidth = CoreS3.Display.width();
@@ -551,13 +501,16 @@ void setup() {
     // Draw initial interface
     drawInterface();
     drawBatteryStatus();
-    updateStatusDisplay("Ready", DisplayConfig::COLOR_TEXT);
+    updateStatus("Ready", DisplayConfig::COLOR_TEXT);
     
     // Initial temperature reading
     float temp = ncir2.getTempValue();
     if (isTemperatureValid(temp)) {
         state.currentTemp = temp * 100;
         updateTemperatureDisplay(state.currentTemp);
+        Serial.printf("Initial temperature: %.2f\n", temp);
+    } else {
+        Serial.println("Initial temperature reading invalid");
     }
     
     // Enable speaker
@@ -566,11 +519,16 @@ void setup() {
     
     // Play startup sound
     playTouchSound(true);
+    
+    Serial.println("Setup complete!");
 }
 
 void loop() {
+    static unsigned long lastErrorTime = 0;
+    static int consecutiveErrors = 0;
     unsigned long currentMillis = millis();
-    M5.update();
+    
+    CoreS3.update();  // Update device state
     
     // Update battery status every 5 seconds
     if (currentMillis - state.lastBatteryUpdate >= TimeConfig::BATTERY_CHECK_INTERVAL) {
@@ -585,12 +543,28 @@ void loop() {
     if (state.isMonitoring) {
         if (currentMillis - state.lastTempUpdate >= TimeConfig::TEMP_UPDATE_INTERVAL) {
             float temp = ncir2.getTempValue();
+            Serial.printf("Raw temp reading: %.2f\n", temp);
+            
             if (isTemperatureValid(temp)) {
+                consecutiveErrors = 0;  // Reset error count on successful reading
                 state.currentTemp = temp * 100;  // Convert to int32_t (keeping 2 decimal places)
                 updateTemperatureDisplay(state.currentTemp);
                 state.tempHistory[state.historyIndex] = state.currentTemp;
                 state.historyIndex = (state.historyIndex + 1) % 5;
-                handleTemperatureAlerts();
+                updateTemperatureStatus();
+            } else {
+                consecutiveErrors++;
+                if (currentMillis - lastErrorTime >= 5000) {  // Log error at most every 5 seconds
+                    Serial.printf("Invalid temperature reading (error #%d): %.2f\n", consecutiveErrors, temp);
+                    lastErrorTime = currentMillis;
+                }
+                
+                if (consecutiveErrors >= 5) {  // Show error after 5 consecutive failed readings
+                    updateStatus("Sensor Error", DisplayConfig::COLOR_ALERT);
+                    state.isMonitoring = false;  // Stop monitoring
+                    consecutiveErrors = 0;  // Reset error count
+                    Serial.println("Stopping monitoring due to consecutive errors");
+                }
             }
             state.lastTempUpdate = currentMillis;
         }
@@ -606,6 +580,9 @@ void loop() {
         printDebugInfo();
         state.lastDebugUpdate = currentMillis;
     }
+    
+    // Small delay to prevent tight loop
+    delay(10);
 }
 
 void enterSettingsMenu() {
@@ -630,132 +607,182 @@ void showLowBatteryWarning(int batteryLevel) {
     delay(2000);
 }
 
-void handleTemperatureAlerts() {
-    // Handle temperature alerts
-    int32_t displayTemp;
-    if (settings.useCelsius) {
-        displayTemp = state.currentTemp / 100;
-    } else {
-        displayTemp = celsiusToFahrenheit(state.currentTemp) / 100;
-    }
+void handleTouchInput() {
+    if (!CoreS3.Touch.getCount()) return;
     
-    if (displayTemp < TempConfig::MIN_C || displayTemp > TempConfig::MAX_C) {
-        updateStatusDisplay("Temperature Out of Range", DisplayConfig::COLOR_WARNING);
-    } else if (abs(displayTemp - TempConfig::TARGET_C) > TempConfig::TOLERANCE_C) {
-        updateStatusDisplay("Temperature Not at Target", DisplayConfig::COLOR_WARNING);
-    } else {
-        updateStatusDisplay("Temperature Stable", DisplayConfig::COLOR_GOOD);
-    }
-}
-
-void updateStatusDisplay(const char* status, uint32_t color) {
-    if (state.inSettingsMenu) return;  // Don't update status in settings menu
+    auto t = CoreS3.Touch.getDetail();
+    if (!t.wasPressed()) return;
     
-    // Only update if status has changed
-    if (state.lastStatus != status) {
-        int buttonY = CoreS3.Display.height() - BUTTON_HEIGHT - MARGIN;
-        int statusBoxY = buttonY - STATUS_BOX_HEIGHT - MARGIN;
-        
-        // Clear status area with proper margins
-        CoreS3.Display.fillRect(MARGIN + 5, statusBoxY + 5, 
-                              CoreS3.Display.width() - (MARGIN * 2) - 10, 
-                              STATUS_BOX_HEIGHT - 10, 
-                              DisplayConfig::COLOR_BACKGROUND);
-        
-        // Draw new status with size based on length
-        CoreS3.Display.setTextDatum(middle_center);
-        int textSize = strlen(status) > 20 ? 2 : 3;  // Smaller text for longer messages
-        CoreS3.Display.setTextSize(textSize);
-        CoreS3.Display.setTextColor(color);
-        CoreS3.Display.drawString(status, CoreS3.Display.width()/2, 
-                                statusBoxY + (STATUS_BOX_HEIGHT/2));
-        
-        state.lastStatus = status;
-    }
-}
-
-void showUpdateScreen() {
-    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
-    CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
-    CoreS3.Display.setTextDatum(middle_center);
-    CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString("Updating...", CoreS3.Display.width()/2, CoreS3.Display.height()/2 - 40);
+    // Update activity time for ANY touch in settings
+    unsigned long now = millis();
+    state.lastActivityTime = now;
     
-    // Progress bar
-    int barWidth = CoreS3.Display.width() - (MARGIN * 4);
-    int barHeight = 20;
-    int barX = MARGIN * 2;
-    int barY = CoreS3.Display.height()/2;
+    // Calculate menu boundaries
+    int itemHeight = 50;
+    int startY = HEADER_HEIGHT + MARGIN;
+    int visibleHeight = CoreS3.Display.height() - startY - MARGIN;
+    int totalMenuHeight = MenuConfig::MENU_ITEMS * itemHeight;
+    int maxScroll = max(0, totalMenuHeight - visibleHeight);
     
-    // Draw progress bar outline
-    CoreS3.Display.drawRect(barX, barY, barWidth, barHeight, DisplayConfig::COLOR_TEXT);
+    // Declare all variables needed for cases before the switch
+    int btnWidth = 60;
+    int spacing = 10;
+    int startX = CoreS3.Display.width() - 290;
+    int btnIndex = 0;
+    float oldEmissivity = 0.0f;
     
-    // Animate progress bar
-    for (int i = 0; i <= barWidth - 4; i++) {
-        CoreS3.Display.fillRect(barX + 2, barY + 2, i, barHeight - 4, DisplayConfig::COLOR_GOOD);
-        if (settings.soundEnabled && (i % 5 == 0)) {  // Play sound every 5 pixels
-            int freq = map(i, 0, barWidth - 4, 500, 2000);  // Increasing frequency
-            CoreS3.Speaker.tone(freq, 10);
+    // Handle scrolling
+    if (t.y < startY) {
+        if (state.settingsScrollPosition > 0) {
+            state.settingsScrollPosition = max(0, state.settingsScrollPosition - itemHeight);
+            playTouchSound(true);
+            drawSettingsMenu();
         }
-        delay(10);
+        return;
     }
     
-    if (settings.soundEnabled) {
-        CoreS3.Speaker.tone(2000, 100);  // Completion sound
+    if (t.y > CoreS3.Display.height() - MARGIN) {
+        if (state.settingsScrollPosition < maxScroll) {
+            state.settingsScrollPosition = min(maxScroll, state.settingsScrollPosition + itemHeight);
+            playTouchSound(true);
+            drawSettingsMenu();
+        }
+        return;
     }
-    delay(500);
+    
+    // Calculate touched item
+    int touchedItem = (t.y - startY + state.settingsScrollPosition) / itemHeight;
+    
+    // Validate touched item
+    if (touchedItem >= 0 && touchedItem < MenuConfig::MENU_ITEMS) {
+        switch (touchedItem) {
+            case 0:  // Temperature Unit
+                settings.useCelsius = !settings.useCelsius;
+                playTouchSound(true);
+                saveSettings();
+                break;
+                
+            case 1:  // Sound
+                settings.soundEnabled = !settings.soundEnabled;
+                playTouchSound(true);
+                saveSettings();
+                break;
+                
+            case 2:  // Brightness
+                btnIndex = (t.x - startX) / (btnWidth + spacing);
+                if (btnIndex >= 0 && btnIndex < 4) {
+                    const int levels[4] = {64, 128, 192, 255};
+                    settings.brightness = levels[btnIndex];
+                    CoreS3.Display.setBrightness(settings.brightness);
+                    playTouchSound(true);
+                    saveSettings();
+                }
+                break;
+                
+            case 3:  // Emissivity
+                oldEmissivity = settings.emissivity;
+                playTouchSound(true);
+                adjustEmissivity();
+                if (oldEmissivity != settings.emissivity) {
+                    saveSettings();
+                    showRestartConfirmation(oldEmissivity, settings.emissivity);
+                }
+                break;
+        }
+        
+        drawSettingsMenu();
+    }
 }
 
-void showMessage(const char* title, const char* message, uint32_t color) {
-    // Clear screen
-    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
-    CoreS3.Display.setTextColor(color);
-    
-    // Show message
-    CoreS3.Display.setTextDatum(middle_center);
-    CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString(title, CoreS3.Display.width()/2, CoreS3.Display.height()/2 - 20);
-    CoreS3.Display.drawString(message, CoreS3.Display.width()/2, CoreS3.Display.height()/2 + 20);
-    
-    // Wait for touch
-    delay(2000);
-}
-
-void showRestartConfirmation(float oldEmissivity, float newEmissivity) {
-    // Clear screen
-    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
-    CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
-    
-    // Show restart confirmation
-    CoreS3.Display.setTextDatum(top_center);
-    CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString("Emissivity Changed", CoreS3.Display.width()/2, 20);
-    
-    // Draw old and new emissivity values
-    char oldEmisStr[16];
-    char newEmisStr[16];
-    sprintf(oldEmisStr, "%.2f", oldEmissivity);
-    sprintf(newEmisStr, "%.2f", newEmissivity);
-    CoreS3.Display.drawString("Old: " + String(oldEmisStr), CoreS3.Display.width()/2, 60);
-    CoreS3.Display.drawString("New: " + String(newEmisStr), CoreS3.Display.width()/2, 100);
-    
-    // Draw restart button
-    int buttonWidth = 150;
-    int buttonHeight = 40;
-    int buttonX = (CoreS3.Display.width() - buttonWidth) / 2;
-    int buttonY = CoreS3.Display.height() - buttonHeight - 20;
-    
-    CoreS3.Display.fillRoundRect(buttonX, buttonY, buttonWidth, buttonHeight, 5, DisplayConfig::COLOR_BUTTON);
-    CoreS3.Display.setTextDatum(middle_center);
-    CoreS3.Display.drawString("Restart", buttonX + buttonWidth/2, buttonY + buttonHeight/2);
-    
-    // Wait for touch to restart
-    while (!CoreS3.Touch.getDetail().wasPressed()) {
-        delay(10);
+void updateTemperatureDisplay(int32_t temp) {
+    // Only update if temperature has changed
+    if (temp == state.lastDisplayTemp && !state.inSettingsMenu) {
+        return;
     }
     
-    // Restart the device
-    ESP.restart();
+    state.lastDisplayTemp = temp;
+    
+    // Clear temperature display area
+    int tempBoxY = HEADER_HEIGHT + MARGIN;
+    CoreS3.Display.fillRect(MARGIN + 1, tempBoxY + 1, 
+                              CoreS3.Display.width() - (2 * MARGIN) - 2, 
+                              TEMP_BOX_HEIGHT - 2, 
+                              DisplayConfig::COLOR_BACKGROUND);
+    
+    // Format temperature string
+    char tempStr[32];
+    char unitStr[2] = {settings.useCelsius ? 'C' : 'F', '\0'};
+    float displayTemp;
+    uint32_t tempColor;
+    
+    if (settings.useCelsius) {
+        displayTemp = temp / 100.0f;  // Convert back to float
+        if (displayTemp < TempConfig::MIN_C / 100.0f) {
+            tempColor = DisplayConfig::COLOR_COLD;
+            ncir2.setLEDColor(DisplayConfig::COLOR_COLD);
+            updateStatus("Too Cold", DisplayConfig::COLOR_COLD);
+        } else if (displayTemp > TempConfig::MAX_C / 100.0f) {
+            tempColor = DisplayConfig::COLOR_HOT;
+            ncir2.setLEDColor(DisplayConfig::COLOR_HOT);
+            updateStatus("Too Hot", DisplayConfig::COLOR_HOT);
+        } else if (abs(displayTemp * 100 - TempConfig::TARGET_C) <= TempConfig::TOLERANCE_C) {
+            tempColor = DisplayConfig::COLOR_GOOD;
+            ncir2.setLEDColor(DisplayConfig::COLOR_GOOD);
+            updateStatus("Perfect", DisplayConfig::COLOR_GOOD);
+        } else {
+            tempColor = DisplayConfig::COLOR_WARNING;
+            ncir2.setLEDColor(DisplayConfig::COLOR_WARNING);
+            updateStatus("Getting Close", DisplayConfig::COLOR_WARNING);
+        }
+    } else {
+        // Convert to Fahrenheit for display
+        int32_t tempF = celsiusToFahrenheit(temp);
+        displayTemp = tempF / 100.0f;
+        
+        if (displayTemp < 300.0f) {  // Below 300°F
+            tempColor = DisplayConfig::COLOR_COLD;
+            ncir2.setLEDColor(DisplayConfig::COLOR_COLD);
+            updateStatus("Too Cold", DisplayConfig::COLOR_COLD);
+        } else if (displayTemp > 640.0f) {  // Above 640°F
+            tempColor = DisplayConfig::COLOR_HOT;
+            ncir2.setLEDColor(DisplayConfig::COLOR_HOT);
+            updateStatus("Too Hot", DisplayConfig::COLOR_HOT);
+        } else if (displayTemp >= 500.0f && displayTemp <= 520.0f) {  // Perfect range
+            tempColor = DisplayConfig::COLOR_GOOD;
+            ncir2.setLEDColor(DisplayConfig::COLOR_GOOD);
+            updateStatus("Perfect", DisplayConfig::COLOR_GOOD);
+        } else {
+            tempColor = DisplayConfig::COLOR_WARNING;
+            ncir2.setLEDColor(DisplayConfig::COLOR_WARNING);
+            updateStatus("Getting Close", DisplayConfig::COLOR_WARNING);
+        }
+    }
+    
+    // Format temperature with 1 decimal place
+    sprintf(tempStr, "%.1f°%s", displayTemp, unitStr);
+    
+    // Draw temperature
+    CoreS3.Display.setTextDatum(middle_center);
+    CoreS3.Display.setTextColor(tempColor);
+    CoreS3.Display.setTextSize(4);
+    CoreS3.Display.drawString(tempStr, CoreS3.Display.width()/2, HEADER_HEIGHT + MARGIN + (TEMP_BOX_HEIGHT/2));
+}
+
+void playTouchSound(bool success) {
+    if (!settings.soundEnabled) return;
+    
+    // Initialize speaker
+    CoreS3.Speaker.begin();
+    CoreS3.Speaker.setVolume(128);  // Set to 50% volume
+    
+    if (success) {
+        CoreS3.Speaker.tone(1000, 50);  // 1kHz for 50ms
+    } else {
+        CoreS3.Speaker.tone(500, 100);  // 500Hz for 100ms
+    }
+    
+    delay(50);  // Wait for sound to finish
+    CoreS3.Speaker.end();  // Cleanup speaker
 }
 
 void adjustEmissivity() {
@@ -1082,10 +1109,10 @@ void toggleMonitoring() {
     state.isMonitoring = !state.isMonitoring;
     
     if (state.isMonitoring) {
-        updateStatusDisplay("Monitoring...", DisplayConfig::COLOR_GOOD);
+        updateStatus("Monitoring...", DisplayConfig::COLOR_GOOD);
         monitorBtn.label = "Stop";
     } else {
-        updateStatusDisplay("Ready", DisplayConfig::COLOR_TEXT);
+        updateStatus("Ready", DisplayConfig::COLOR_TEXT);
         monitorBtn.label = "Monitor";
         // Turn off LED when not monitoring
         ncir2.setLEDColor(0);
@@ -1093,4 +1120,67 @@ void toggleMonitoring() {
     
     // Redraw the monitor button with new label
     drawButton(monitorBtn, state.isMonitoring ? DisplayConfig::COLOR_BUTTON_ACTIVE : DisplayConfig::COLOR_BUTTON);
+}
+
+void showMessage(const char* title, const char* message, uint32_t color) {
+    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
+    CoreS3.Display.setTextColor(color);
+    CoreS3.Display.setTextDatum(middle_center);
+    CoreS3.Display.setTextSize(2);
+    CoreS3.Display.drawString(title, CoreS3.Display.width()/2, CoreS3.Display.height()/2 - 20);
+    CoreS3.Display.drawString(message, CoreS3.Display.width()/2, CoreS3.Display.height()/2 + 20);
+    delay(2000);
+}
+
+void loadSettings() {
+    settings.load(preferences);
+    
+    // Check if this is first boot
+    bool isFirstBoot = preferences.getBool("firstBoot", true);
+    if (isFirstBoot) {
+        // Let user select temperature unit
+        settings.useCelsius = selectTemperatureUnit();
+        
+        // Save the selection and mark first boot complete
+        preferences.putBool("firstBoot", false);
+        saveSettings();
+    }
+    
+    // Apply loaded settings
+    CoreS3.Display.setBrightness(settings.brightness);
+}
+
+void saveSettings() {
+    settings.save(preferences);
+}
+
+void showRestartConfirmation(float oldEmissivity, float newEmissivity) {
+    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
+    CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
+    
+    // Show restart confirmation
+    CoreS3.Display.setTextDatum(top_center);
+    CoreS3.Display.setTextSize(2);
+    CoreS3.Display.drawString("Emissivity Changed", CoreS3.Display.width()/2, 20);
+    
+    // Draw old and new emissivity values
+    char oldEmisStr[16], newEmisStr[16];
+    sprintf(oldEmisStr, "%.2f", oldEmissivity);
+    sprintf(newEmisStr, "%.2f", newEmissivity);
+    
+    CoreS3.Display.drawString("Old: " + String(oldEmisStr), CoreS3.Display.width()/2, 60);
+    CoreS3.Display.drawString("New: " + String(newEmisStr), CoreS3.Display.width()/2, 100);
+    
+    // Draw restart message
+    CoreS3.Display.drawString("Tap to restart", CoreS3.Display.width()/2, 160);
+    
+    // Wait for touch
+    while (true) {
+        CoreS3.update();
+        if (CoreS3.Touch.getCount()) {
+            delay(100);  // Debounce
+            ESP.restart();
+        }
+        delay(10);
+    }
 }
