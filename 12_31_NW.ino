@@ -14,26 +14,23 @@ M5UNIT_NCIR2 ncir2;
 Preferences preferences;
 
 
-
-// Temperature and timing configuration
 namespace TempConfig {
-    static const int16_t MIN_C = 304;     // 580°F
-    static const int16_t MAX_C = 371;     // 700°F
-    static const int16_t TARGET_C = 338;  // 640°F
-    static const int16_t TOLERANCE_C = 5;
+    const float MIN_C = 0.0;      // Minimum valid temperature in Celsius
+    const float MAX_C = 300.0;    // Maximum valid temperature in Celsius
+    const float TARGET_C = 180.0; // Target temperature in Celsius
+    const float TOLERANCE_C = 5.0; // Temperature tolerance range in Celsius
+}
+// Temperature and timing configuration
+namespace TimeConfig {
+    const unsigned long TEMP_UPDATE_INTERVAL = 100;    // Temperature update every 100ms
+    const unsigned long HISTORY_UPDATE_INTERVAL = 1000; // History update every second
+    const unsigned long MENU_UPDATE_INTERVAL = 100;    // Menu update every 100ms
+    const unsigned long IDLE_UPDATE_INTERVAL = 1000;   // Idle screen update every second
+    const unsigned long POWER_CHECK_INTERVAL = 5000;   // Power check every 5 seconds
+    const unsigned long STATUS_MESSAGE_DURATION = 3000; // Status messages last 3 seconds
+    const unsigned long BATTERY_CHECK = 5000;          // Battery check interval
 }
 
-// Timing configuration (ms)
-namespace TimeConfig {
-    static const unsigned long TEMP_UPDATE = 250;
-    static const unsigned long BATTERY_CHECK = 30000;
-    static const unsigned long STATUS_UPDATE = 5000;
-    static const unsigned long TOUCH_DEBOUNCE = 100;
-    static const unsigned long BEEP_INTERVAL = 2000;
-    static const unsigned long BATTERY_UPDATE_INTERVAL = 60000;
-    static const unsigned long TEMP_UPDATE_INTERVAL = 250;
-    static const unsigned long DEBUG_UPDATE_INTERVAL = 10000;
-}
 
 // Display configuration
 namespace DisplayConfig {
@@ -62,8 +59,6 @@ namespace DisplayConfig {
 
 // Touch and feedback constants
 const int TOUCH_THRESHOLD = 40;      // Minimum movement to register as a touch
-#define I2C_SDA 2
-#define I2C_SCL 1
 
 // Speaker constants
 const int BEEP_FREQUENCY = 1000;  // 1kHz tone
@@ -160,7 +155,6 @@ struct Button {
 // Function declarations
 void drawButton(Button &btn, uint32_t color);
 void drawInterface();
-void updateDisplay();
 void handleTemperatureAlerts();
 void drawBatteryStatus();
 bool selectTemperatureUnit();
@@ -196,7 +190,7 @@ void drawScrollIndicator(bool isUpArrow, int y);
 bool isButtonPressed(const Button& btn, int touchX, int touchY);
 // Function declarations (add this with your other declarations)
 void showStartupAnimation();
-
+void debugLogf(const char* function, const char* format, ...);
 // Button declarations
 Button monitorBtn = {0, 0, 0, 0, "Monitor", false, true};
 Button settingsBtn = {0, 0, 0, 0, "Settings", false, true};  // Changed from emissivityBtn
@@ -205,6 +199,14 @@ static LGFX_Sprite* tempSprite = nullptr;
 Settings settings;
 DeviceState state;
 
+void debugLogf(const char* function, const char* format, ...) {
+    char buffer[128];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    debugLog(function, buffer);
+}
 void showStartupAnimation() {
     esp_task_wdt_reset();
     
@@ -217,7 +219,7 @@ void showStartupAnimation() {
     // Draw title
     CoreS3.Display.drawString("TerpMeter", CoreS3.Display.width()/2, 40);
     
-    // Progress bar parameters
+   // Progress bar parameters
     const int barWidth = 200;
     const int barHeight = 20;
     const int barX = (CoreS3.Display.width() - barWidth) / 2;
@@ -281,6 +283,30 @@ void drawScrollIndicator(bool isUpArrow, int y) {
         }
     }
 }
+int16_t filterAndCalibrateTemp(int16_t rawTemp) {
+    static const int MOVING_AVG_SIZE = 5;
+    static int16_t readings[MOVING_AVG_SIZE];
+    static int readIndex = 0;
+    static float total = 0;
+    
+    // Remove the oldest reading
+    total = total - readings[readIndex];
+    // Add the new reading
+    readings[readIndex] = rawTemp;
+    total = total + readings[readIndex];
+    readIndex = (readIndex + 1) % MOVING_AVG_SIZE;
+    
+    // Calculate average
+    float avgTemp = total / MOVING_AVG_SIZE;
+    
+    // Apply calibration for high temperature range (around 500°F)
+    // These values may need adjustment based on actual calibration measurements
+    if (avgTemp > 45000) { // Above 450°F (in centidegrees)
+        avgTemp = avgTemp * 1.05; // Adjust by 5% for high temperature compensation
+    }
+    
+    return (int16_t)avgTemp;
+}
 void checkStack() {
     char stack;
     debugLog("Stack", String("Stack pointer: " + String((uint32_t)&stack, HEX)).c_str());
@@ -290,9 +316,10 @@ bool isLowMemory() {
     return ESP.getFreeHeap() < 10000; // Adjust threshold as needed
 }
 void printMemoryInfo() {
-    debugLog("Memory", String("Free Heap: " + String(ESP.getFreeHeap()) + " bytes").c_str());
-    debugLog("Memory", String("Largest Free Block: " + String(ESP.getMaxAllocHeap()) + " bytes").c_str());
+    debugLogf("Memory", "Free Heap: %d bytes", ESP.getFreeHeap());
+    debugLogf("Memory", "Largest Free Block: %d bytes", ESP.getMaxAllocHeap());
 }
+// Debug logging utility functions
 void debugLog(const char* function, const char* message) {
     Serial.printf("[DEBUG] %s: %s\n", function, message);
     Serial.flush(); // Ensure the message is sent before any potential crash
@@ -628,9 +655,9 @@ void updateTemperatureDisplay(int16_t temp) {
 void playTouchSound(bool success) {
     if (!settings.soundEnabled) return;
     
-    // Initialize speaker
+    // Initialize speaker just for this sound
     CoreS3.Speaker.begin();
-    CoreS3.Speaker.setVolume(128);  // Set to 50% volume
+    CoreS3.Speaker.setVolume(128);
     
     if (success) {
         CoreS3.Speaker.tone(1000, 50);  // 1kHz for 50ms
@@ -639,7 +666,7 @@ void playTouchSound(bool success) {
     }
     
     delay(50);  // Wait for sound to finish
-    CoreS3.Speaker.end();  // Cleanup speaker
+    CoreS3.Speaker.end();  // Clean up speaker
 }
 void drawInterface() {
     esp_task_wdt_reset();
@@ -866,178 +893,6 @@ bool selectTemperatureUnit() {
     CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
     return false;
 }
-void setup() {
-    // Start Serial first and add delay for stability
-    Serial.begin(115200);
-    delay(1000);
-    Serial.println("\nStarting TerpMeter initialization...");
-
-    // Initialize M5 device with explicit configuration
-    auto cfg = M5.config();
-    CoreS3.begin(cfg);
-    CoreS3.Power.begin();
-    CoreS3.Power.setChargeCurrent(1000);
-        // Set CPU frequency to stable rate
-    Serial.println("CoreS3 initialized");
-
-    // Initialize display with explicit settings
-    CoreS3.Display.begin();
-    CoreS3.Display.setRotation(1);
-    CoreS3.Display.setBrightness(128); // Start with 50% brightness
-    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
-    Serial.println("Display initialized");
-
-    // Initialize touch with display
-    CoreS3.Touch.begin(&CoreS3.Display); // Pass the display object to touch initialization
-    Serial.println("Touch initialized");
-
-    // Test display
-    CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
-    CoreS3.Display.setTextSize(2);
-    CoreS3.Display.setCursor(10, 10);
-    CoreS3.Display.println("TerpMeter Starting...");
-    Serial.println("Display test message written");
-
-    // Initialize preferences
-    if (!preferences.begin("terp-meter", false)) {
-        Serial.println("Failed to initialize preferences");
-    } else {
-        Serial.println("Preferences initialized");
-    }
-
-    // Load settings
-    loadSettings();
-    Serial.println("Settings loaded");
-
-    // Initialize I2C for NCIR sensor
-    Wire.begin(2, 1);
-    delay(100);
-    if (!ncir2.begin(&Wire, 2, 1, M5UNIT_NCIR2_DEFAULT_ADDR)) {
-        Serial.println("Failed to initialize NCIR sensor!");
-        CoreS3.Display.println("NCIR Sensor Error");
-    } else {
-        Serial.println("NCIR sensor initialized");
-    }
-    ncir2.setLEDColor(0);
-
-    esp_task_wdt_init(10, false);  // 10 second timeout, don't panic on timeout
-    esp_task_wdt_add(NULL);  // Add current task to watchdog
-    debugLog("setup", "Watchdog initialized with 10s timeout");
-
-    // Show startup animation
-    showStartupAnimation();
-    
-    // Initialize temperature unit selection
-    if (!selectTemperatureUnit()) {
-        Serial.println("Temperature unit selection timed out");
-        settings.useCelsius = true; // Default to Celsius if no selection
-    }
-    
-    // Save settings
-    saveSettings();
-
-    // Initialize display interface
-    drawInterface();
-    Serial.println("Initial interface drawn");
-
-    Serial.println("Setup complete!");
-}
-void loop() {
-    // Reset watchdog timer
-    esp_task_wdt_reset();
-    
-    unsigned long currentMillis = millis();
-    
-    // Check for low memory condition
-    if (isLowMemory()) {
-        debugLog("loop", "WARNING: Low memory condition detected");
-        printMemoryInfo();
-    }
-    
-    // Update battery status periodically
-    if (currentMillis - state.lastBatteryUpdate >= TimeConfig::BATTERY_UPDATE_INTERVAL) {
-        debugLog("loop", "Updating battery status");
-        drawBatteryStatus();
-        state.lastBatteryUpdate = currentMillis;
-    }
-    
-    // Handle touch input
-    CoreS3.update();
-    if (CoreS3.Touch.getCount()) {
-        auto t = CoreS3.Touch.getDetail();
-        if (t.wasPressed()) {
-            debugLog("loop", "Touch detected");
-            state.lastActivityTime = currentMillis;
-            
-            try {
-                if (state.inSettingsMenu) {
-                    debugLog("loop", "Handling settings menu touch");
-                    handleSettingsMenu();
-                } else {
-                    // Log touch coordinates
-                    char touchInfo[64];
-                    sprintf(touchInfo, "Main menu touch at x=%d, y=%d", t.x, t.y);
-                    debugLog("loop", touchInfo);
-                    
-                    if (touchInButton(monitorBtn, t.x, t.y)) {
-                        debugLog("loop", "Monitor button pressed");
-                        toggleMonitoring();
-                    } else if (touchInButton(settingsBtn, t.x, t.y)) {
-                        debugLog("loop", "Settings button pressed");
-                        enterSettingsMenu();
-                    }
-                }
-            } catch (const std::exception& e) {
-                char errorMsg[128];
-                sprintf(errorMsg, "Error in touch handling: %s", e.what());
-                debugLog("loop", errorMsg);
-                // Attempt to recover
-                state.inSettingsMenu = false;
-                drawInterface();
-            }
-        }
-    }
-    
-    // Update temperature display if monitoring
-    if (state.isMonitoring && (currentMillis - state.lastTempUpdate >= TimeConfig::TEMP_UPDATE_INTERVAL)) {
-        debugLog("loop", "Updating temperature");
-        try {
-            int16_t rawTemp = ncir2.getTempValue();
-            state.currentTemp = filterAndCalibrateTemp(rawTemp);
-            updateTemperatureDisplay(state.currentTemp);
-            updateTemperatureTrend();
-            handleTemperatureAlerts();
-            state.lastTempUpdate = currentMillis;
-            
-            // Debug output for temperature calibration in Fahrenheit
-            float rawTempF = (rawTemp / 100.0f * 9.0f / 5.0f) + 32.0f;
-            float calibratedTempF = (state.currentTemp / 100.0f * 9.0f / 5.0f) + 32.0f;
-            char tempInfo[64];
-            sprintf(tempInfo, "Raw: %.1fF, Calibrated: %.1fF", rawTempF, calibratedTempF);
-            debugLog("loop", tempInfo);
-        } catch (const std::exception& e) {
-            debugLog("loop", "Error updating temperature");
-            state.isMonitoring = false;
-            updateStatusDisplay("Sensor Error", DisplayConfig::COLOR_WARNING);
-        }
-    }
-    
-    // Debug info update
-    static unsigned long lastMemCheck = 0;
-    if (currentMillis - lastMemCheck >= TimeConfig::DEBUG_UPDATE_INTERVAL) {
-        debugLog("loop", "Periodic debug update");
-        printDebugInfo();
-        printMemoryInfo();
-        lastMemCheck = currentMillis;
-    }
-    
-    // Check for any error conditions
-    checkForErrors();
-    
-    // Small delay to prevent tight polling
-    delay(10);
-}
-
 void enterSettingsMenu() {
     state.isMonitoring = false;  // Stop monitoring while in settings
     state.inSettingsMenu = true;
@@ -1060,12 +915,10 @@ void updateTemperatureTrend() {
 }
 void checkBatteryWarning(unsigned long currentMillis) {
     if (currentMillis - state.lastBatteryUpdate >= TimeConfig::BATTERY_CHECK) {
-        int bat_level = CoreS3.Power.getBatteryLevel();
-        if (bat_level <= 20 && !state.lowBatteryWarningShown) {
-            showLowBatteryWarning(bat_level);
-            state.lowBatteryWarningShown = true;
-        } else if (bat_level > 20) {
-            state.lowBatteryWarningShown = false;
+        float voltage = CoreS3.Power.getBatteryVoltage();
+        if (voltage < 3.3 && !CoreS3.Power.isCharging()) {
+            updateStatusDisplay("Low Battery", DisplayConfig::COLOR_WARNING);
+            setCpuFrequencyMhz(80);  // Reduce CPU frequency to save power
         }
         state.lastBatteryUpdate = currentMillis;
     }
@@ -1083,20 +936,12 @@ void showLowBatteryWarning(int batteryLevel) {
     delay(2000);
 }
 void handleTemperatureAlerts() {
-    // Handle temperature alerts
-    int displayTemp;
-    if (settings.useCelsius) {
-        displayTemp = state.currentTemp / 100;
-    } else {
-        displayTemp = celsiusToFahrenheit(state.currentTemp) / 100;
-    }
+    float displayTemp = state.currentTemp / 100.0f;  // Convert to actual temperature
     
     if (displayTemp < TempConfig::MIN_C || displayTemp > TempConfig::MAX_C) {
         updateStatusDisplay("Temperature Out of Range", DisplayConfig::COLOR_WARNING);
     } else if (abs(displayTemp - TempConfig::TARGET_C) > TempConfig::TOLERANCE_C) {
-        updateStatusDisplay("Temperature Not at Target", DisplayConfig::COLOR_WARNING);
-    } else {
-        updateStatusDisplay("Temperature Stable", DisplayConfig::COLOR_GOOD);
+        updateStatusDisplay("Temperature Warning", DisplayConfig::COLOR_WARNING);
     }
 }
 void updateStatusDisplay(const char* status, uint32_t color) {
@@ -1443,9 +1288,52 @@ bool touchInButton(Button &btn, int32_t touch_x, int32_t touch_y) {
 }
 // Battery status display
 void drawBatteryStatus() {
+    static bool lastChargingState = false;
+    static unsigned long lastVoltageCheck = 0;
+    
     int batteryLevel = CoreS3.Power.getBatteryLevel();
     bool isCharging = CoreS3.Power.isCharging();
+    float voltage = CoreS3.Power.getBatteryVoltage();
     
+    // Check if power source changed
+    if (lastChargingState != isCharging) {
+        debugLogf("Power", "Source changed: %s, Voltage: %.2fV", isCharging ? "USB" : "Battery", voltage);
+        lastChargingState = isCharging;
+        
+        // Re-initialize components on power source change
+        debugLog("Power", "Reinitializing components...");
+        Wire.end();
+        delay(50);
+        Wire.begin(2, 1);
+        delay(100);
+        
+        // Reinitialize sensor
+        if (!ncir2.begin(&Wire, 2, 1, M5UNIT_NCIR2_DEFAULT_ADDR)) {
+            debugLog("Power", "Failed to reinitialize sensor after power change");
+            updateStatusDisplay("Sensor Error", DisplayConfig::COLOR_WARNING);
+        } else {
+            debugLog("Power", "Sensor reinitialized successfully");
+        }
+
+        // Reset touch if needed
+        CoreS3.Touch.begin(&CoreS3.Display);
+        delay(50);
+        debugLog("Power", "Touch reinitialized");
+    }
+
+    // Monitor voltage every second
+    if (millis() - lastVoltageCheck >= 1000) {
+        lastVoltageCheck = millis();
+        debugLogf("Power", "Status - Voltage: %.2fV, Level: %d%%, Charging: %s", 
+                 voltage, batteryLevel, isCharging ? "Yes" : "No");
+                     
+        if (voltage < 3.3 && !isCharging) {
+            debugLog("Power", "Low voltage detected, reducing CPU frequency");
+            updateStatusDisplay("Low Battery", DisplayConfig::COLOR_WARNING);
+            setCpuFrequencyMhz(80);
+        }
+    }
+
     // Battery icon dimensions
     const int battX = CoreS3.Display.width() - 40;
     const int battY = 5;
@@ -1484,7 +1372,7 @@ void drawBatteryStatus() {
     CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
     CoreS3.Display.drawString(battText, battX - 5, battY + battH/2);
     
-    // Draw charging indicator if applicable
+    // Draw charging indicator
     if (isCharging) {
         CoreS3.Display.fillTriangle(
             battX - 15, battY + battH/2,
@@ -1494,7 +1382,6 @@ void drawBatteryStatus() {
         );
     }
 }
-
 void exitSettingsMenu() {
     state.isProcessingSettings = false;  // Ensure processing flag is cleared
     state.inSettingsMenu = false;
@@ -1503,29 +1390,180 @@ void exitSettingsMenu() {
     state.lastActivityTime = millis();  // Reset activity timer
     drawInterface();
 }
+void setup() {
+    // Start Serial first and add delay for stability
+    Serial.begin(115200);
+    delay(1000);
+    debugLog("Setup", "\nStarting TerpMeter initialization...");
 
-// Function to filter and calibrate temperature readings
-int16_t filterAndCalibrateTemp(int16_t rawTemp) {
-    static const int MOVING_AVG_SIZE = 5;
-    static int16_t readings[MOVING_AVG_SIZE];
-    static int readIndex = 0;
-    static float total = 0;
+    // Initialize M5 device with explicit configuration that disables I2S
+    auto cfg = M5.config();
+    cfg.internal_spk = false;  // Disable speaker initialization
+    cfg.internal_mic = false;  // Disable microphone initialization
+    cfg.internal_imu = false;  // Disable IMU if not needed
+    cfg.internal_rtc = false;  // Disable RTC if not needed
+    cfg.clear_display = true;
+    cfg.output_power = true;
     
-    // Remove the oldest reading
-    total = total - readings[readIndex];
-    // Add the new reading
-    readings[readIndex] = rawTemp;
-    total = total + readings[readIndex];
-    readIndex = (readIndex + 1) % MOVING_AVG_SIZE;
+    CoreS3.begin(cfg);
+    CoreS3.Power.begin();
+    CoreS3.Power.setChargeCurrent(900);  // Set to 300mA for stability
+    setCpuFrequencyMhz(80);  // Set CPU to lower frequency for stability
     
-    // Calculate average
-    float avgTemp = total / MOVING_AVG_SIZE;
-    
-    // Apply calibration for high temperature range (around 500°F)
-    // These values may need adjustment based on actual calibration measurements
-    if (avgTemp > 45000) { // Above 450°F (in centidegrees)
-        avgTemp = avgTemp * 1.05; // Adjust by 5% for high temperature compensation
+    // Only initialize speaker when needed for sounds
+    if (settings.soundEnabled) {
+        CoreS3.Speaker.begin();
+        CoreS3.Speaker.setVolume(128);
     }
     
-    return (int16_t)avgTemp;
+    
+    debugLogf("Setup", "Power initialized - Charging: %s, Battery: %d%%, Voltage: %.2fV", 
+              CoreS3.Power.isCharging() ? "Yes" : "No",
+              CoreS3.Power.getBatteryLevel(),
+              CoreS3.Power.getBatteryVoltage());
+
+    // Initialize display with explicit settings
+    CoreS3.Display.begin();
+    CoreS3.Display.setRotation(1);
+    CoreS3.Display.setBrightness(128); // Start with 50% brightness
+    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
+    debugLog("Setup", "Display initialized");
+
+    // Initialize touch with display
+    CoreS3.Touch.begin(&CoreS3.Display); // Pass the display object to touch initialization
+    debugLog("Setup", "Touch initialized");
+
+
+    // Initialize preferences
+    if (!preferences.begin("terp-meter", false)) {
+        debugLog("Setup", "Failed to initialize preferences");
+    } else {
+        debugLog("Setup", "Preferences initialized");
+    }
+
+    // Load settings
+    loadSettings();
+    debugLogf("Setup", "Settings loaded - Celsius: %s, Sound: %s, Brightness: %d, Emissivity: %.2f",
+              settings.useCelsius ? "Yes" : "No",
+              settings.soundEnabled ? "Yes" : "No",
+              settings.brightness,
+              settings.emissivity);
+
+    // Initialize I2C for NCIR sensor
+    Wire.begin(2, 1);
+    delay(100);
+    if (!ncir2.begin(&Wire, 2, 1, M5UNIT_NCIR2_DEFAULT_ADDR)) {
+        debugLog("Setup", "Failed to initialize NCIR sensor!");
+        CoreS3.Display.println("NCIR Sensor Error");
+    } else {
+        debugLog("Setup", "NCIR sensor initialized");
+    }
+    ncir2.setLEDColor(0);
+
+    // Initialize watchdog timer
+    esp_task_wdt_init(10, false);  // 10 second timeout, don't panic on timeout
+    esp_task_wdt_add(NULL);  // Add current task to watchdog
+    debugLog("Setup", "Watchdog initialized with 10s timeout");
+
+    // Show startup animation
+    showStartupAnimation();
+    debugLog("Setup", "Startup animation completed");
+    
+    // Initialize temperature unit selection
+    if (!selectTemperatureUnit()) {
+        debugLog("Setup", "Temperature unit selection timed out");
+        settings.useCelsius = true; // Default to Celsius if no selection
+    } else {
+        debugLogf("Setup", "Temperature unit selected: %s", 
+                 settings.useCelsius ? "Celsius" : "Fahrenheit");
+    }
+    
+    // Save settings
+    saveSettings();
+    debugLog("Setup", "Settings saved");
+
+    // Initialize display interface
+    drawInterface();
+    debugLog("Setup", "Initial interface drawn");
+
+    // Print final memory status
+    printMemoryInfo();
+    debugLog("Setup", "Setup complete!");
+
+    // Reset watchdog timer before exiting setup
+    esp_task_wdt_reset();
+}
+void loop() {
+    // Reset watchdog
+    esp_task_wdt_reset();
+
+    // Get current time
+    unsigned long currentMillis = millis();
+
+    // Process touch input with debounce
+    if (CoreS3.Touch.getCount() > 0) {
+        static unsigned long lastButtonPress = 0;
+        if (currentMillis - lastButtonPress >= 200) { // 200ms debounce
+            handleTouchInput();
+            lastButtonPress = currentMillis;
+        }
+    }
+
+    // Main monitoring loop
+    if (state.isMonitoring) {
+        if (currentMillis - state.lastTempUpdate >= 100) { // 100ms update interval
+            // Get raw temperature and filter it
+            int16_t rawTemp = ncir2.getTempValue();
+            state.currentTemp = filterAndCalibrateTemp(rawTemp);
+
+            // Debug logging
+            debugLogf("Temperature", "Raw: %d, Filtered: %d", 
+                     rawTemp, state.currentTemp);
+
+            // Update the display
+            drawInterface();
+            state.lastTempUpdate = currentMillis;
+        }
+    }
+
+    // Settings menu handling
+    if (state.inSettingsMenu) {
+        drawSettingsMenu();
+    }
+
+    // Battery monitoring and power management
+    if (currentMillis - state.lastBatteryUpdate >= 5000) { // 5 second interval
+        // Get battery status
+        float voltage = CoreS3.Power.getBatteryVoltage();
+        int level = CoreS3.Power.getBatteryLevel();
+        bool charging = CoreS3.Power.isCharging();
+
+        // Debug logging
+        debugLogf("Battery", "Voltage: %.2fV, Level: %d%%, Charging: %s",
+                 voltage, level, charging ? "Yes" : "No");
+
+        // Low battery handling
+        if (voltage < 3.3 && !charging) {
+            updateStatusDisplay("Low Battery", TFT_RED);
+            if (CoreS3.Display.getBrightness() > 64) {
+                CoreS3.Display.setBrightness(64); // Reduce brightness
+            }
+            setCpuFrequencyMhz(80); // Reduce CPU frequency
+        }
+
+        // Update battery indicator
+        drawBatteryStatus();
+        state.lastBatteryUpdate = currentMillis;
+    }
+
+    // Memory monitoring (every 30 seconds)
+    static unsigned long lastMemCheck = 0;
+    if (currentMillis - lastMemCheck >= 30000) {
+        debugLogf("Memory", "Free heap: %d bytes", ESP.getFreeHeap());
+        lastMemCheck = currentMillis;
+    }
+
+    // Small delay to prevent watchdog triggers
+    delay(10);
+    esp_task_wdt_reset();
 }
