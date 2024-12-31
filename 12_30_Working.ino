@@ -38,8 +38,8 @@ namespace TimeConfig {
 // Display configuration
 namespace DisplayConfig {
     // Retro-modern color scheme
-    const uint32_t COLOR_BACKGROUND = 0x000B1E;  // Deep navy blue
-    const uint32_t COLOR_TEXT = 0x00FF9C;        // Bright cyan/mint
+    static const uint32_t COLOR_BACKGROUND = TFT_BLACK;  // Change from 0x000B1E
+    static const uint32_t COLOR_TEXT = TFT_WHITE;        // Change from 0x00FF9C
     const uint32_t COLOR_BUTTON = 0x1B3358;      // Muted blue
     const uint32_t COLOR_BUTTON_ACTIVE = 0x3CD070; // Bright green
     const uint32_t COLOR_COLD = 0x00A6FB;        // Bright blue
@@ -61,7 +61,9 @@ namespace DisplayConfig {
 }
 
 // Touch and feedback constants
-const int TOUCH_THRESHOLD = 10;      // Minimum movement to register as a touch
+const int TOUCH_THRESHOLD = 40;      // Minimum movement to register as a touch
+#define I2C_SDA 2
+#define I2C_SCL 1
 
 // Speaker constants
 const int BEEP_FREQUENCY = 1000;  // 1kHz tone
@@ -193,6 +195,9 @@ bool isLowMemory();
 void checkStack();
 void drawScrollIndicator(bool isUpArrow, int y);
 bool isButtonPressed(const Button& btn, int touchX, int touchY);
+// Function declarations (add this with your other declarations)
+void showStartupAnimation();
+
 // Button declarations
 Button monitorBtn = {0, 0, 0, 0, "Monitor", false, true};
 Button settingsBtn = {0, 0, 0, 0, "Settings", false, true};  // Changed from emissivityBtn
@@ -201,7 +206,54 @@ static LGFX_Sprite* tempSprite = nullptr;
 Settings settings;
 DeviceState state;
 
-
+void showStartupAnimation() {
+    esp_task_wdt_reset();
+    
+    // Clear screen and set initial text properties
+    CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
+    CoreS3.Display.setTextDatum(middle_center);
+    CoreS3.Display.setTextSize(3);
+    CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
+    
+    // Draw title
+    CoreS3.Display.drawString("TerpMeter", CoreS3.Display.width()/2, 40);
+    
+    // Progress bar parameters
+    const int barWidth = 200;
+    const int barHeight = 20;
+    const int barX = (CoreS3.Display.width() - barWidth) / 2;
+    const int barY = 100;
+    
+    // Draw progress bar outline
+    CoreS3.Display.drawRect(barX - 2, barY - 2, barWidth + 4, barHeight + 4, DisplayConfig::COLOR_TEXT);
+    
+    // Animate progress bar
+    for (int i = 0; i < barWidth; i += 4) {
+        CoreS3.Display.fillRect(barX, barY, i, barHeight, DisplayConfig::COLOR_GOOD);
+        
+        // Reset watchdog every 20 pixels
+        if (i % 20 == 0) {
+            esp_task_wdt_reset();
+        }
+        
+        // Optional: Play startup sound
+        if (settings.soundEnabled && i % 40 == 0) {
+            CoreS3.Speaker.tone(500 + i, 50);
+        }
+        
+        delay(10);
+    }
+    
+    // Victory sound
+    if (settings.soundEnabled) {
+        CoreS3.Speaker.tone(1000, 100);
+        delay(100);
+        CoreS3.Speaker.tone(1500, 100);
+    }
+    
+    delay(500);
+    esp_task_wdt_reset();
+}
 bool isButtonPressed(const Button& btn, int touchX, int touchY) {
     return (touchX >= btn.x && touchX <= (btn.x + btn.width) &&
             touchY >= btn.y && touchY <= (btn.y + btn.height));
@@ -683,6 +735,7 @@ void drawInterface() {
 }
 bool selectTemperatureUnit() {
     esp_task_wdt_reset();
+    Serial.println("Starting temperature unit selection");
     
     // Clear screen and draw header
     CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
@@ -719,22 +772,27 @@ bool selectTemperatureUnit() {
         false,
         true
     };
+
+    Serial.printf("Celsius button: x=%d, y=%d, w=%d, h=%d\n", 
+                 celsiusBtn.x, celsiusBtn.y, celsiusBtn.width, celsiusBtn.height);
+    Serial.printf("Fahrenheit button: x=%d, y=%d, w=%d, h=%d\n", 
+                 fahrenheitBtn.x, fahrenheitBtn.y, fahrenheitBtn.width, fahrenheitBtn.height);
     
     // Draw buttons
     drawButton(celsiusBtn, settings.useCelsius ? DisplayConfig::COLOR_BUTTON_ACTIVE : DisplayConfig::COLOR_BUTTON);
     drawButton(fahrenheitBtn, !settings.useCelsius ? DisplayConfig::COLOR_BUTTON_ACTIVE : DisplayConfig::COLOR_BUTTON);
     
-    // Draw labels
+    // Draw labels with larger text size
     CoreS3.Display.setTextDatum(middle_center);
-    CoreS3.Display.setTextSize(2);
+    CoreS3.Display.setTextSize(3);  // Increased text size
     CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
     
     // Draw unit symbols
-    CoreS3.Display.drawString("C", celsiusBtn.x + celsiusBtn.width/2, celsiusBtn.y + celsiusBtn.height/2);
-    CoreS3.Display.drawString("F", fahrenheitBtn.x + fahrenheitBtn.width/2, fahrenheitBtn.y + fahrenheitBtn.height/2);
+    CoreS3.Display.drawString("°C", celsiusBtn.x + celsiusBtn.width/2, celsiusBtn.y + celsiusBtn.height/2);
+    CoreS3.Display.drawString("°F", fahrenheitBtn.x + fahrenheitBtn.width/2, fahrenheitBtn.y + fahrenheitBtn.height/2);
     
     // Draw unit names
-    CoreS3.Display.setTextSize(1);
+    CoreS3.Display.setTextSize(2);
     CoreS3.Display.drawString("Celsius", celsiusBtn.x + celsiusBtn.width/2, celsiusBtn.y + celsiusBtn.height + 20);
     CoreS3.Display.drawString("Fahrenheit", fahrenheitBtn.x + fahrenheitBtn.width/2, fahrenheitBtn.y + fahrenheitBtn.height + 20);
     
@@ -744,16 +802,22 @@ bool selectTemperatureUnit() {
     
     while (!selectionMade && (millis() - startTime < 30000)) {  // 30 second timeout
         esp_task_wdt_reset();
+        CoreS3.update();  // Update M5Stack state
         
         if (CoreS3.Touch.getCount()) {
             auto t = CoreS3.Touch.getDetail();
+            Serial.printf("Touch detected: x=%d, y=%d\n", t.x, t.y);
+            
             if (t.wasPressed()) {
+                Serial.println("Touch was pressed");
+                
                 if (touchInButton(celsiusBtn, t.x, t.y)) {
+                    Serial.println("Celsius button pressed");
                     // Highlight selected button
                     drawButton(celsiusBtn, DisplayConfig::COLOR_BUTTON_ACTIVE);
-                    CoreS3.Display.setTextSize(2);
+                    CoreS3.Display.setTextSize(3);
                     CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
-                    CoreS3.Display.drawString("C", celsiusBtn.x + celsiusBtn.width/2, celsiusBtn.y + celsiusBtn.height/2);
+                    CoreS3.Display.drawString("°C", celsiusBtn.x + celsiusBtn.width/2, celsiusBtn.y + celsiusBtn.height/2);
                     
                     // Play sound and update settings
                     playTouchSound(true);
@@ -764,11 +828,12 @@ bool selectTemperatureUnit() {
                     delay(200);
                 }
                 else if (touchInButton(fahrenheitBtn, t.x, t.y)) {
+                    Serial.println("Fahrenheit button pressed");
                     // Highlight selected button
                     drawButton(fahrenheitBtn, DisplayConfig::COLOR_BUTTON_ACTIVE);
-                    CoreS3.Display.setTextSize(2);
+                    CoreS3.Display.setTextSize(3);
                     CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
-                    CoreS3.Display.drawString("F", fahrenheitBtn.x + fahrenheitBtn.width/2, fahrenheitBtn.y + fahrenheitBtn.height/2);
+                    CoreS3.Display.drawString("°F", fahrenheitBtn.x + fahrenheitBtn.width/2, fahrenheitBtn.y + fahrenheitBtn.height/2);
                     
                     // Play sound and update settings
                     playTouchSound(true);
@@ -781,13 +846,12 @@ bool selectTemperatureUnit() {
             }
         }
         
-        // Give other tasks a chance to run
-        delay(5);
-        yield();
+        delay(10);  // Small delay to prevent tight loop
     }
     
     // Save settings if a selection was made
     if (selectionMade) {
+        Serial.println("Temperature unit selected: " + String(settings.useCelsius ? "Celsius" : "Fahrenheit"));
         saveSettings();
         // Clear screen before returning
         CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
@@ -795,100 +859,94 @@ bool selectTemperatureUnit() {
     }
     
     // If no selection was made (timeout)
+    Serial.println("Temperature unit selection timed out");
     CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
     return false;
 }
 void setup() {
+    // Start Serial first and add delay for stability
     Serial.begin(115200);
-    delay(1500);
-    
-    // Initialize M5 device
+    delay(1000);
+    Serial.println("\nStarting TerpMeter initialization...");
+
+    // Initialize M5 device with explicit configuration
     auto cfg = M5.config();
+    cfg.serial_baudrate = 115200;   // default=115200
+    cfg.clear_display = true;       // default=true
+    cfg.output_power = true;        // default=true
+    cfg.internal_imu = true;        // default=true
+    cfg.internal_rtc = true;        // default=true
+    cfg.internal_spk = true;        // default=true
+    cfg.internal_mic = true;        // default=true
+
     CoreS3.begin(cfg);
+    Serial.println("CoreS3 initialized");
+
+    // Initialize display with explicit settings
+    CoreS3.Display.begin();
     CoreS3.Display.setRotation(1);
-    CoreS3.Display.setBrightness(settings.brightness);  // Already in 0-255 range
+    CoreS3.Display.setBrightness(128); // Start with 50% brightness
     CoreS3.Display.fillScreen(DisplayConfig::COLOR_BACKGROUND);
-    
-    // Initialize preferences
-    preferences.begin("terp-meter", false);
-    
-    // Load settings first
-    loadSettings();
-    
-    // Initialize watchdog timer
-    esp_task_wdt_init(10, false); // 5 second timeout
-    esp_task_wdt_add(NULL);
-    
-    debugLog("setup", "Watchdog initialized");
+    Serial.println("Display initialized");
 
+    // Initialize touch with display
+    CoreS3.Touch.begin(&CoreS3.Display); // Pass the display object to touch initialization
+    Serial.println("Touch initialized");
 
-    
-    // Initialize I2C and NCIR sensor
-    Wire.begin(2, 1);
-    ncir2.begin();
-    ncir2.setLEDColor(0);
-    
-    // Show initialization animation
-    CoreS3.Display.setTextDatum(middle_center);
-    CoreS3.Display.setTextSize(3);
+    // Test display
     CoreS3.Display.setTextColor(DisplayConfig::COLOR_TEXT);
-    CoreS3.Display.drawString("Initializing", CoreS3.Display.width()/2, 40);
-    
-    // Progress bar parameters
-    const int barWidth = 280;
-    const int barHeight = 20;
-    const int barX = (CoreS3.Display.width() - barWidth) / 2;
-    const int barY = 100;
-    const int segments = 10;
-    const int segmentWidth = barWidth / segments;
-    const int animationDelay = 100;
-    
-    // Draw progress bar outline
-    CoreS3.Display.drawRect(barX - 2, barY - 2, barWidth + 4, barHeight + 4, DisplayConfig::COLOR_TEXT);
-    
-    // Animated progress bar with sliding effect
-    for (int i = 0; i < segments; i++) {
-        // Slide effect
-        for (int j = 0; j <= segmentWidth; j++) {
-            int x = barX + (i * segmentWidth);
-            CoreS3.Display.fillRect(x, barY, j, barHeight, DisplayConfig::COLOR_GOOD);
-            delay(5);
-        }
-        
-        // Play a tone that increases in pitch
-        if (settings.soundEnabled) {
-            int frequency = 500 + (i * 100);  // Frequency increases with each segment
-            CoreS3.Speaker.tone(frequency, 50);
-        }
+    CoreS3.Display.setTextSize(2);
+    CoreS3.Display.setCursor(10, 10);
+    CoreS3.Display.println("TerpMeter Starting...");
+    Serial.println("Display test message written");
+
+    // Initialize preferences
+    if (!preferences.begin("terp-meter", false)) {
+        Serial.println("Failed to initialize preferences");
+    } else {
+        Serial.println("Preferences initialized");
     }
-    
-    // Victory sound sequence
-    if (settings.soundEnabled) {
-        CoreS3.Speaker.setVolume(128);
-        CoreS3.Speaker.tone(784, 100);  // G5
-        delay(100);
-        CoreS3.Speaker.tone(988, 100);  // B5
-        delay(100);
-        CoreS3.Speaker.tone(1319, 200); // E6
-        delay(200);
-        CoreS3.Speaker.tone(1047, 400); // C6
-        delay(400);
+
+    // Load settings
+    loadSettings();
+    Serial.println("Settings loaded");
+
+    // Initialize I2C for NCIR sensor
+    Wire.begin(2, 1);
+    delay(100);
+    if (!ncir2.begin()) {
+        Serial.println("Failed to initialize NCIR sensor!");
+        CoreS3.Display.println("NCIR Sensor Error");
+    } else {
+        Serial.println("NCIR sensor initialized");
     }
-    
-    delay(500);
+    ncir2.setLEDColor(0);
+
+    // Initialize watchdog timer
+    esp_task_wdt_init(10, false);
+    esp_task_wdt_add(NULL);
+    Serial.println("Watchdog initialized");
+
+    // Show startup animation
+    showStartupAnimation();
     
     // Initialize temperature unit selection
-    settings.useCelsius = selectTemperatureUnit();
-    preferences.putBool("useCelsius", settings.useCelsius);  // Save the selection immediately
+    if (!selectTemperatureUnit()) {
+        Serial.println("Temperature unit selection timed out");
+        settings.useCelsius = true; // Default to Celsius if no selection
+    }
     
-    state.isMonitoring = false;
-    
+    // Save settings
+    saveSettings();
+
     // Initialize display interface
     drawInterface();
-    ncir2.setLEDColor(0);
-    drawBatteryStatus();
+    Serial.println("Initial interface drawn");
+
+    Serial.println("Setup complete!");
 }
 void loop() {
+    static unsigned long lastDebugPrint = 0;
     static unsigned long lastWatchdogReset = 0;
     static unsigned long lastBatteryUpdate = 0;
     static unsigned long lastDisplayUpdate = 0;
@@ -896,6 +954,12 @@ void loop() {
     static bool lastMonitoringState = false;
     unsigned long currentMillis = millis();
 
+        // Print debug info every 5 seconds
+    if (currentMillis - lastDebugPrint >= 5000) {
+        Serial.printf("Loop running... Free heap: %d\n", ESP.getFreeHeap());
+        lastDebugPrint = currentMillis;
+    }
+    
     try {
         // Reset watchdog timer every second
         if (currentMillis - lastWatchdogReset >= 1000) {
@@ -1364,11 +1428,19 @@ int16_t fahrenheitToCelsius(int16_t fahrenheit) {
 
 // Button interaction helper
 bool touchInButton(Button &btn, int32_t touch_x, int32_t touch_y) {
-    return (touch_x >= btn.x && touch_x <= btn.x + btn.width &&
-            touch_y >= btn.y && touch_y <= btn.y + btn.height &&
-            btn.enabled);
+    bool touched = (touch_x >= btn.x && 
+                   touch_x <= (btn.x + btn.width) &&
+                   touch_y >= btn.y && 
+                   touch_y <= (btn.y + btn.height) &&
+                   btn.enabled);
+    
+    if (touched) {
+        Serial.printf("Button touched: x=%d, y=%d, btn.x=%d, btn.y=%d, btn.width=%d, btn.height=%d\n",
+                     touch_x, touch_y, btn.x, btn.y, btn.width, btn.height);
+    }
+    
+    return touched;
 }
-
 // Battery status display
 void drawBatteryStatus() {
     int batteryLevel = CoreS3.Power.getBatteryLevel();
