@@ -1,3 +1,4 @@
+// Last updated: 2025-01-13 02:21 AM EST
 #include <FastLED.h>
 #include <M5CoreS3.h>
 #include <M5GFX.h>
@@ -691,46 +692,45 @@ void drawMainDisplay(float temperature) {
 void drawSettingsMenu() {
     CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
     
-    const int itemHeight = 40;
-    const int startY = 50;
-    const int boxPadding = 10;
-    const int menuWidth = CoreS3.Display.width() - (boxPadding * 2);
-    
     // Draw title
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextDatum(top_center);
     CoreS3.Display.setTextColor(Config::Display::COLOR_PRIMARY);
-    CoreS3.Display.drawString("Settings", CoreS3.Display.width()/2, 10);
+    CoreS3.Display.drawString("Settings", CoreS3.Display.width()/2, 20);
     
-    // Draw menu items
-    for (int i = 0; i < sizeof(menuItems)/sizeof(menuItems[0]); i++) {
-        int boxY = startY + (i * (itemHeight + boxPadding));
-        int boxX = boxPadding;
-        int boxWidth = menuWidth;
-        int boxHeight = itemHeight;
-        
-        // Draw menu item background
+    // Calculate positions for menu items
+    const int startY = 70;
+    const int itemSpacing = 35;
+    const int totalItems = 5;  // Including Exit
+    
+    // Draw all menu items
+    CoreS3.Display.setTextSize(2);
+    CoreS3.Display.setTextDatum(middle_left);
+    
+    for (int i = 0; i < totalItems; i++) {
+        int y = startY + (i * itemSpacing);
         if (i == state.menuSelection) {
             // Selected item
-            CoreS3.Display.fillRoundRect(boxX, boxY, boxWidth, boxHeight, 
-                                       Config::Display::CORNER_RADIUS, 
+            CoreS3.Display.fillRoundRect(10, y - 15, CoreS3.Display.width() - 20, 30,
+                                       Config::Display::CORNER_RADIUS,
                                        Config::Display::COLOR_PRIMARY);
             CoreS3.Display.setTextColor(Config::Display::COLOR_BACKGROUND);
         } else {
-            // Unselected item
-            CoreS3.Display.fillRoundRect(boxX, boxY, boxWidth, boxHeight,
-                                       Config::Display::CORNER_RADIUS,
-                                       Config::Display::COLOR_SECONDARY_BG);
+            // Unselected items
             CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
         }
-        
-        // Draw menu item text
-        CoreS3.Display.setTextDatum(middle_left);
-        CoreS3.Display.drawString(menuItems[i], boxX + boxPadding, boxY + (boxHeight/2));
+        CoreS3.Display.drawString(menuItems[i], 20, y);
     }
+    
+    // Draw navigation hint
+    CoreS3.Display.setTextSize(1);
+    CoreS3.Display.setTextDatum(bottom_center);
+    CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
+    CoreS3.Display.drawString("Red: Select  |  Blue: Next", CoreS3.Display.width()/2, CoreS3.Display.height() - 10);
 }
 
 void drawUnitSelection() {
+    CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextDatum(middle_center);
     CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
@@ -747,11 +747,12 @@ void drawUnitSelection() {
     
     // Draw instructions
     CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString("Press Button 1 to save", CoreS3.Display.width()/2, CoreS3.Display.height() - 80);
-    CoreS3.Display.drawString("Press Button 2 to change", CoreS3.Display.width()/2, CoreS3.Display.height() - 40);
+    CoreS3.Display.drawString("Press Red to save", CoreS3.Display.width()/2, CoreS3.Display.height() - 80);
+    CoreS3.Display.drawString("Press Blue to change", CoreS3.Display.width()/2, CoreS3.Display.height() - 40);
 }
 
 void drawBrightnessAdjustment() {
+    CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextDatum(middle_center);
     CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
@@ -776,11 +777,12 @@ void drawBrightnessAdjustment() {
     
     // Draw instructions
     CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString("Press Button 1 to save", CoreS3.Display.width()/2, CoreS3.Display.height() - 80);
-    CoreS3.Display.drawString("Press Button 2 to change", CoreS3.Display.width()/2, CoreS3.Display.height() - 40);
+    CoreS3.Display.drawString("Press Red to save", CoreS3.Display.width()/2, CoreS3.Display.height() - 80);
+    CoreS3.Display.drawString("Press Blue to change", CoreS3.Display.width()/2, CoreS3.Display.height() - 40);
 }
 
 void drawSoundSettings() {
+    CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
     CoreS3.Display.setTextSize(2);
     CoreS3.Display.setTextDatum(middle_center);
     CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
@@ -797,8 +799,8 @@ void drawSoundSettings() {
     
     // Draw instructions
     CoreS3.Display.setTextSize(2);
-    CoreS3.Display.drawString("Press Button 1 to save", CoreS3.Display.width()/2, CoreS3.Display.height() - 80);
-    CoreS3.Display.drawString("Press Button 2 to change", CoreS3.Display.width()/2, CoreS3.Display.height() - 40);
+    CoreS3.Display.drawString("Press Red to save", CoreS3.Display.width()/2, CoreS3.Display.height() - 80);
+    CoreS3.Display.drawString("Press Blue to change", CoreS3.Display.width()/2, CoreS3.Display.height() - 40);
 }
 
 void drawEmissivityAdjustment() {
@@ -880,16 +882,16 @@ void drawEmissivityConfirm() {
     // Restart button (Blue - Button 1)
     CoreS3.Display.fillRoundRect(CoreS3.Display.width()/2 - btnWidth - btnSpacing/2, startY,
                                btnWidth, btnHeight, Config::Display::CORNER_RADIUS,
-                               Config::Display::COLOR_PRIMARY);
+                               Config::Display::COLOR_ERROR);
     CoreS3.Display.setTextColor(Config::Display::COLOR_BACKGROUND);
-    CoreS3.Display.drawString("Restart Now", CoreS3.Display.width()/2 - btnWidth/2 - btnSpacing/2, startY + btnHeight/2);
+    CoreS3.Display.drawString("Cancel", CoreS3.Display.width()/2 - btnWidth/2 - btnSpacing/2, startY + btnHeight/2);
     
     // Cancel button (Red - Button 2)
     CoreS3.Display.fillRoundRect(CoreS3.Display.width()/2 + btnSpacing/2, startY,
                                btnWidth, btnHeight, Config::Display::CORNER_RADIUS,
-                               Config::Display::COLOR_ERROR);
+                               Config::Display::COLOR_PRIMARY);
     CoreS3.Display.setTextColor(Config::Display::COLOR_BACKGROUND);
-    CoreS3.Display.drawString("Cancel", CoreS3.Display.width()/2 + btnWidth/2 + btnSpacing/2, startY + btnHeight/2);
+    CoreS3.Display.drawString("Restart Now ", CoreS3.Display.width()/2 + btnWidth/2 + btnSpacing/2, startY + btnHeight/2);
 }
 
 void drawRestartConfirm() {
@@ -1013,12 +1015,18 @@ bool isValidTemperature(float temp) {
 
 void playSuccessSound() {
     if (settings.soundEnabled) {
-        CoreS3.Speaker.tone(2000, 50);
+        CoreS3.Speaker.tone(1047, 100);  // 1047Hz for 100ms
+        delay(100);
+        CoreS3.Speaker.tone(1319, 100);  // 1319Hz for 100ms
+        delay(100);
     }
 }
 
 void playErrorSound() {
     if (settings.soundEnabled) {
-        CoreS3.Speaker.tone(1000, 100);
+        CoreS3.Speaker.tone(880, 200);  // 880Hz for 200ms
+        delay(250);
+        CoreS3.Speaker.tone(660, 200);  // 660Hz for 200ms
+        delay(200);
     }
 }
