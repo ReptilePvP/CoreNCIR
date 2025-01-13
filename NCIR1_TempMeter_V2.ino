@@ -11,7 +11,7 @@
 #define BUTTON1_PIN 17 // Dual Button unit - Button 1 (G17)
 #define BUTTON2_PIN 18 // Dual Button unit - Button 2 (G18)
 #define NUM_LEDS 1
-// 1/11/24 6:00 pM. WORKING
+// 1/11/24 10:00 PM Working
 // LED Array
 CRGB leds[NUM_LEDS];
 
@@ -23,6 +23,7 @@ enum MenuState {
     BRIGHTNESS_ADJUSTMENT,
     SOUND_SETTINGS,
     EMISSIVITY_ADJUSTMENT,
+    EMISSIVITY_CONFIRM,
     RESTART_CONFIRM
 };
 
@@ -56,6 +57,25 @@ namespace Config {
         const int TRANSITION_MS = 150;  // Animation duration in milliseconds
     }
 }
+
+// Temperature ranges in Fahrenheit
+const int16_t TEMP_COLD_F = 480;    // Below this is too cold
+const int16_t TEMP_MIN_F = 580;     // Start of perfect range
+const int16_t TEMP_MAX_F = 640;     // End of perfect range
+const int16_t TEMP_HOT_F = 800;     // Above this is too hot
+
+// Temperature ranges in Celsius (converted from Fahrenheit)
+const int16_t TEMP_COLD_C = (TEMP_COLD_F - 32) * 5 / 9;
+const int16_t TEMP_MIN_C = (TEMP_MIN_F - 32) * 5 / 9;
+const int16_t TEMP_MAX_C = (TEMP_MAX_F - 32) * 5 / 9;
+const int16_t TEMP_HOT_C = (TEMP_HOT_F - 32) * 5 / 9;
+
+// Custom colors for temperature status
+const uint32_t COLOR_COLD = 0x1E90FF;  // Snowy blue
+const CRGB LED_COLOR_COLD = CRGB(30, 144, 255);  // Matching LED color for cold
+const CRGB LED_COLOR_WARNING = CRGB(255, 191, 0);  // Amber for warning
+const CRGB LED_COLOR_PERFECT = CRGB(0, 255, 0);  // Lime green for perfect
+const CRGB LED_COLOR_HOT = CRGB(255, 0, 0);  // Red for too hot
 
 // Settings structure
 struct Settings {
@@ -121,6 +141,7 @@ void drawUnitSelection();
 void drawBrightnessAdjustment();
 void drawSoundSettings();
 void drawEmissivityAdjustment();
+void drawEmissivityConfirm();
 void drawRestartConfirm();
 void updateDisplay();
 void handleKeyAndLED();
@@ -157,7 +178,7 @@ void setup() {
     
     // Initialize FastLED
     FastLED.addLeds<SK6812, LED_PIN, GRB>(leds, NUM_LEDS);
-    FastLED.setBrightness(128);
+    FastLED.setBrightness(255);
     leds[0] = CRGB::Black;
     FastLED.show();
     Serial.println("FastLED initialized");
@@ -215,7 +236,7 @@ void loop() {
         Serial.print("°C (");
         Serial.print(celsiusToFahrenheit(currentTemp));
         Serial.println("°F)");
-        lastDebugTime = currentTime;
+        lastDebugTime = millis();
     }
     
     // Temperature reading and display update
@@ -316,10 +337,40 @@ void handleButtons() {
             case UNIT_SELECTION:
             case BRIGHTNESS_ADJUSTMENT:
             case SOUND_SETTINGS:
-            case EMISSIVITY_ADJUSTMENT:
                 state.menuState = SETTINGS_MENU;  // Return to settings menu
                 settings.save();
                 Serial.println("Returning to Settings Menu");
+                break;
+                
+            case EMISSIVITY_ADJUSTMENT:
+                if (!button2State && lastButton2State) {  // Red button - decrease
+                    if (settings.emissivity > Config::Emissivity::MIN) {
+                        settings.emissivity -= Config::Emissivity::STEP;
+                        settings.save();
+                        Serial.printf("Emissivity decreased to: %.2f\n", settings.emissivity);
+                        updateDisplay();
+                    }
+                }
+                if (!button1State && lastButton1State) {  // Blue button - increase
+                    if (settings.emissivity < Config::Emissivity::MAX) {
+                        settings.emissivity += Config::Emissivity::STEP;
+                        settings.save();
+                        Serial.printf("Emissivity increased to: %.2f\n", settings.emissivity);
+                        updateDisplay();
+                    }
+                }
+                break;
+                
+            case EMISSIVITY_CONFIRM:
+                if (!button1State && lastButton1State) {  // Blue button - Restart now
+                    settings.save();
+                    ESP.restart();
+                }
+                if (!button2State && lastButton2State) {  // Red button - Cancel
+                    settings.load();  // Reload previous settings
+                    state.menuState = SETTINGS_MENU;
+                    updateDisplay();
+                }
                 break;
                 
             case RESTART_CONFIRM:
@@ -365,7 +416,19 @@ void handleButtons() {
                 break;
                 
             case EMISSIVITY_ADJUSTMENT:
-                // Handled in drawEmissivityAdjustment()
+                if (button2State) {  // Increase emissivity
+                    if (settings.emissivity < Config::Emissivity::MAX) {
+                        settings.emissivity += Config::Emissivity::STEP;
+                        settings.save();
+                        Serial.printf("Emissivity increased to: %.2f\n", settings.emissivity);
+                    }
+                } else {  // Decrease emissivity
+                    if (settings.emissivity > Config::Emissivity::MIN) {
+                        settings.emissivity -= Config::Emissivity::STEP;
+                        settings.save();
+                        Serial.printf("Emissivity decreased to: %.2f\n", settings.emissivity);
+                    }
+                }
                 break;
                 
             case RESTART_CONFIRM:
@@ -382,53 +445,46 @@ void handleButtons() {
 }
 
 void handleKeyAndLED() {
-    static bool lastKeyState = true; // true = released, false = pressed
     bool currentKeyState = digitalRead(KEY_PIN);
     
-    // Debug key state
-    static unsigned long lastDebugTime = 0;
-    if (millis() - lastDebugTime >= 1000) {  // Debug output every second
-        Serial.print("Key State: ");
-        Serial.println(currentKeyState ? "Released" : "Pressed");
-        lastDebugTime = millis();
-    }
-    // Check for key press (transition from high to low)
-    if (!currentKeyState && lastKeyState) {  // Key pressed
-        Serial.println("Key pressed - Toggling monitoring state");
-        if (state.menuState == MAIN_DISPLAY) {
-            state.keyPressed = true;
-            state.isMonitoring = !state.isMonitoring; //Toggle monitoring
-            
-            if (state.isMonitoring) {
-                Serial.println("Monitoring ON - LED Green");
-                leds[0] = CRGB::Green;
-                state.ledActive = true;
-            } else {
-                Serial.println("Monitoring OFF - LED Off");
-                leds[0] = CRGB::Black;
-                state.ledActive = false;
-            }
-            FastLED.show();
-            
-            if (settings.soundEnabled) {
-                CoreS3.Speaker.tone(2000, 50);
-            }
-            state.updateStatus(state.isMonitoring ? "Monitoring..." : "Stopped", 
-                          state.isMonitoring ? Config::Display::COLOR_SUCCESS : Config::Display::COLOR_ERROR);   
-            
-            updateDisplay();
-            state.lastDisplayUpdate = millis(); // Reset display timer after manual update
-        }
-        delay(50);  // Debounce
-    }
-    // Check for key release (transition from low to high)
-    else if (currentKeyState && !lastKeyState) {  // Key just released
-        Serial.println("Key released");
-        state.keyPressed = false;
-        delay(50);  // Debounce delay
-    }
+    // Key press detection (with debounce)
+    static unsigned long lastKeyPressTime = 0;
+    const unsigned long debounceDelay = 250;
+    unsigned long currentTime = millis();
     
-    lastKeyState = currentKeyState;  // Save current state for next comparison
+    if (!currentKeyState && !state.keyPressed && (currentTime - lastKeyPressTime > debounceDelay)) {
+        state.keyPressed = true;
+        lastKeyPressTime = currentTime;
+        
+        // Handle key press based on current menu state
+        switch (state.menuState) {
+            case MAIN_DISPLAY:
+                state.isMonitoring = !state.isMonitoring;
+                if (state.isMonitoring) {
+                    state.updateStatus("Monitoring On", Config::Display::COLOR_SUCCESS);
+                } else {
+                    state.updateStatus("Monitoring Off", Config::Display::COLOR_ERROR);
+                }
+                break;
+                
+            case EMISSIVITY_ADJUSTMENT:
+                state.menuState = EMISSIVITY_CONFIRM;
+                updateDisplay();
+                break;
+        }
+        
+        // Toggle LED state
+        state.ledActive = !state.ledActive;
+        leds[0] = state.ledActive ? CRGB::Green : CRGB::Black;
+        FastLED.show();
+        
+        // Play sound if enabled
+        if (settings.soundEnabled) {
+            playSuccessSound();
+        }
+    } else if (currentKeyState && state.keyPressed) {
+        state.keyPressed = false;
+    }
 }
 
 void updateDisplay() {
@@ -445,19 +501,19 @@ void updateDisplay() {
             drawSettingsMenu();
             break;
         case UNIT_SELECTION:
-            CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
             drawUnitSelection();
             break;
         case BRIGHTNESS_ADJUSTMENT:
-            CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
             drawBrightnessAdjustment();
             break;
         case SOUND_SETTINGS:
-            CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
             drawSoundSettings();
             break;
         case EMISSIVITY_ADJUSTMENT:
             drawEmissivityAdjustment();
+            break;
+        case EMISSIVITY_CONFIRM:
+            drawEmissivityConfirm();
             break;
         case RESTART_CONFIRM:
             drawRestartConfirm();
@@ -473,11 +529,16 @@ void updateDisplay() {
 void drawMainDisplay(float temperature) {
     static float lastDisplayedTemp = -999;
     static MenuState lastMenuState = MAIN_DISPLAY;
+    static bool wasInTarget = false;
     
-    // Always draw the header and background when entering main display
-    if (lastMenuState != state.menuState) {
+    // Force a full redraw if we're coming from a different menu state
+    bool needsFullRedraw = (lastMenuState != state.menuState);
+    lastMenuState = state.menuState;
+    
+    // Ensure a full redraw when transitioning to the main display
+    if (state.menuState == MAIN_DISPLAY && needsFullRedraw) {
         CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
-        lastDisplayedTemp = -999;  // Reset last displayed temperature to force update
+        lastDisplayedTemp = -999;
         
         // Draw header
         CoreS3.Display.fillRoundRect(Config::Display::PADDING, 
@@ -494,20 +555,87 @@ void drawMainDisplay(float temperature) {
         CoreS3.Display.drawString("Temperature Monitor", 
                                 CoreS3.Display.width() / 2,
                                 Config::Display::PADDING + (Config::Display::HEADER_HEIGHT / 2));
-        
-        lastMenuState = state.menuState;
     }
     
     if (isValidTemperature(temperature)) {
         float displayTemp = settings.useCelsius ? temperature : celsiusToFahrenheit(temperature);
         
-        // Always update on first draw or when temperature changes significantly
-        if (lastDisplayedTemp == -999 || abs(displayTemp - lastDisplayedTemp) >= 0.5) {
+        // Determine temperature status, display color, and LED color
+        uint32_t tempColor;
+        CRGB ledColor;
+        String statusMsg;
+        bool inTargetRange = false;
+        
+        if (settings.useCelsius) {
+            if (displayTemp < TEMP_COLD_C) {
+                tempColor = COLOR_COLD;
+                ledColor = LED_COLOR_COLD;
+                statusMsg = "Too Cold!";
+            } else if (displayTemp < TEMP_MIN_C) {
+                tempColor = Config::Display::COLOR_WARNING;
+                ledColor = LED_COLOR_WARNING;
+                statusMsg = "Warming Up";
+            } else if (displayTemp <= TEMP_MAX_C) {
+                tempColor = Config::Display::COLOR_SUCCESS;
+                ledColor = LED_COLOR_PERFECT;
+                statusMsg = "Perfect Temperature";
+                inTargetRange = true;
+            } else if (displayTemp > TEMP_HOT_C) {
+                tempColor = Config::Display::COLOR_ERROR;
+                ledColor = LED_COLOR_HOT;
+                statusMsg = "Too Hot!";
+            } else {
+                tempColor = Config::Display::COLOR_WARNING;
+                ledColor = LED_COLOR_WARNING;
+                statusMsg = "Cooling Down";
+            }
+        } else {
+            if (displayTemp < TEMP_COLD_F) {
+                tempColor = COLOR_COLD;
+                ledColor = LED_COLOR_COLD;
+                statusMsg = "Too Cold!";
+            } else if (displayTemp < TEMP_MIN_F) {
+                tempColor = Config::Display::COLOR_WARNING;
+                ledColor = LED_COLOR_WARNING;
+                statusMsg = "Warming Up";
+            } else if (displayTemp <= TEMP_MAX_F) {
+                tempColor = Config::Display::COLOR_SUCCESS;
+                ledColor = LED_COLOR_PERFECT;
+                statusMsg = "Perfect Temperature";
+                inTargetRange = true;
+            } else if (displayTemp > TEMP_HOT_F) {
+                tempColor = Config::Display::COLOR_ERROR;
+                ledColor = LED_COLOR_HOT;
+                statusMsg = "Too Hot!";
+            } else {
+                tempColor = Config::Display::COLOR_WARNING;
+                ledColor = LED_COLOR_WARNING;
+                statusMsg = "Cooling Down";
+            }
+        }
+        
+        // Update status message and color
+        state.updateStatus(statusMsg, tempColor);
+        
+        // Update LED color if monitoring is active
+        if (state.isMonitoring) {
+            leds[0] = ledColor;
+            FastLED.show();
+        }
+        
+        // Play sound when entering target range
+        if (inTargetRange && !wasInTarget && settings.soundEnabled) {
+            CoreS3.Speaker.tone(1000, 100);
+        }
+        wasInTarget = inTargetRange;
+        
+        // Update if temperature changed significantly or needs full redraw
+        if (abs(displayTemp - lastDisplayedTemp) >= 0.5 || needsFullRedraw) {
             char tempStr[10];
             char unitStr[2] = {settings.useCelsius ? 'C' : 'F', '\0'};
             sprintf(tempStr, "%d", (int)round(displayTemp));
             
-            // Center position calculations - calculate these first
+            // Calculate all positions first
             int centerX = CoreS3.Display.width() / 2;
             int centerY = CoreS3.Display.height() / 2;
             
@@ -533,9 +661,10 @@ void drawMainDisplay(float temperature) {
                                        Config::Display::CORNER_RADIUS,
                                        Config::Display::COLOR_SECONDARY_BG);
             
-            // Draw temperature
+            // Draw temperature - always centered
             CoreS3.Display.setTextSize(6);
-            CoreS3.Display.setTextColor(Config::Display::COLOR_PRIMARY);
+            CoreS3.Display.setTextColor(tempColor);  // Use status-based color
+            CoreS3.Display.setTextDatum(middle_center);
             CoreS3.Display.drawString(tempStr, 
                                     centerX - (unitWidth/2), 
                                     centerY);
@@ -554,7 +683,7 @@ void drawMainDisplay(float temperature) {
             
             lastDisplayedTemp = displayTemp;
         }
-    } else {
+    } else if (needsFullRedraw) {
         state.updateStatus("Invalid Temperature", Config::Display::COLOR_ERROR);
     }
 }
@@ -728,6 +857,41 @@ void drawEmissivityAdjustment() {
     CoreS3.Display.drawString(maxStr, 20, 60);
 }
 
+void drawEmissivityConfirm() {
+    CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
+    
+    // Draw title and message
+    CoreS3.Display.setTextSize(2);
+    CoreS3.Display.setTextDatum(top_center);
+    CoreS3.Display.setTextColor(Config::Display::COLOR_WARNING);
+    CoreS3.Display.drawString("Restart Required", CoreS3.Display.width()/2, 20);
+    
+    CoreS3.Display.setTextSize(1);
+    CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
+    CoreS3.Display.drawString("Device must be restarted for", CoreS3.Display.width()/2, 60);
+    CoreS3.Display.drawString("emissivity changes to take effect", CoreS3.Display.width()/2, 80);
+    
+    // Draw buttons
+    const int btnWidth = 120;
+    const int btnHeight = 40;
+    const int btnSpacing = 20;
+    const int startY = 140;
+    
+    // Restart button (Blue - Button 1)
+    CoreS3.Display.fillRoundRect(CoreS3.Display.width()/2 - btnWidth - btnSpacing/2, startY,
+                               btnWidth, btnHeight, Config::Display::CORNER_RADIUS,
+                               Config::Display::COLOR_PRIMARY);
+    CoreS3.Display.setTextColor(Config::Display::COLOR_BACKGROUND);
+    CoreS3.Display.drawString("Restart Now", CoreS3.Display.width()/2 - btnWidth/2 - btnSpacing/2, startY + btnHeight/2);
+    
+    // Cancel button (Red - Button 2)
+    CoreS3.Display.fillRoundRect(CoreS3.Display.width()/2 + btnSpacing/2, startY,
+                               btnWidth, btnHeight, Config::Display::CORNER_RADIUS,
+                               Config::Display::COLOR_ERROR);
+    CoreS3.Display.setTextColor(Config::Display::COLOR_BACKGROUND);
+    CoreS3.Display.drawString("Cancel", CoreS3.Display.width()/2 + btnWidth/2 + btnSpacing/2, startY + btnHeight/2);
+}
+
 void drawRestartConfirm() {
     static bool lastButton1State = true;
     static bool lastButton2State = true;
@@ -735,7 +899,7 @@ void drawRestartConfirm() {
     bool button2State = digitalRead(BUTTON2_PIN);
     
     // Button 1 (Restart)
-    if (!button1State && lastButton1State) {
+    if (!button2State && lastButton2State) {
         if (settings.soundEnabled) {
             playSuccessSound();
         }
@@ -744,7 +908,7 @@ void drawRestartConfirm() {
     }
     
     // Button 2 (Cancel)
-    if (!button2State && lastButton2State) {
+    if (!button1State && lastButton1State) {
         state.menuState = SETTINGS_MENU;
         if (settings.soundEnabled) {
             playSuccessSound();
