@@ -1,4 +1,4 @@
-// Last updated: 2025-01-13 02:21 AM EST
+// Last updated: 2025-01-14 10:33 AM EST
 #include <FastLED.h>
 #include <M5CoreS3.h>
 #include <M5GFX.h>
@@ -301,16 +301,46 @@ void handleButtons() {
                     // Debug output
                     Serial.println("Exiting to Main Display");
                     
-                    // Force immediate redraw of main display
-                    drawMainDisplay(readTemperature());
+                    // Get current temperature and update status before redrawing
+                    float temp = readTemperature();
+                    if (isValidTemperature(temp)) {
+                        float displayTemp = settings.useCelsius ? temp : celsiusToFahrenheit(temp);
+                        if (settings.useCelsius) {
+                            if (displayTemp < TEMP_COLD_C) {
+                                state.updateStatus("Too Cold!", COLOR_COLD);
+                            } else if (displayTemp < TEMP_MIN_C) {
+                                state.updateStatus("Warming Up", Config::Display::COLOR_WARNING);
+                            } else if (displayTemp <= TEMP_MAX_C) {
+                                state.updateStatus("Perfect Temperature", Config::Display::COLOR_SUCCESS);
+                            } else if (displayTemp > TEMP_HOT_C) {
+                                state.updateStatus("Too Hot!", Config::Display::COLOR_ERROR);
+                            } else {
+                                state.updateStatus("Cooling Down", Config::Display::COLOR_WARNING);
+                            }
+                        } else {
+                            if (displayTemp < TEMP_COLD_F) {
+                                state.updateStatus("Too Cold!", COLOR_COLD);
+                            } else if (displayTemp < TEMP_MIN_F) {
+                                state.updateStatus("Warming Up", Config::Display::COLOR_WARNING);
+                            } else if (displayTemp <= TEMP_MAX_F) {
+                                state.updateStatus("Perfect Temperature", Config::Display::COLOR_SUCCESS);
+                            } else if (displayTemp > TEMP_HOT_F) {
+                                state.updateStatus("Too Hot!", Config::Display::COLOR_ERROR);
+                            } else {
+                                state.updateStatus("Cooling Down", Config::Display::COLOR_WARNING);
+                            }
+                        }
+                    } else {
+                        state.updateStatus("Invalid Temperature", Config::Display::COLOR_ERROR);
+                    }
+                    
+                    // Use updateDisplay to ensure everything is drawn properly
+                    updateDisplay();
                     
                     // Reset button states and add delay
                     delay(250);  // Debounce delay
                     lastButton1State = digitalRead(BUTTON1_PIN);
                     lastButton2State = digitalRead(BUTTON2_PIN);
-                    
-                    // Force another update to ensure display is correct
-                    updateDisplay();
                     
                     return;  // Exit immediately to prevent further processing
                 }
@@ -540,22 +570,35 @@ void drawMainDisplay(float temperature) {
     if (state.menuState == MAIN_DISPLAY && needsFullRedraw) {
         CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
         lastDisplayedTemp = -999;
-        
-        // Draw header
-        CoreS3.Display.fillRoundRect(Config::Display::PADDING, 
-                                   Config::Display::PADDING, 
-                                   CoreS3.Display.width() - (Config::Display::PADDING * 2),
-                                   Config::Display::HEADER_HEIGHT,
-                                   Config::Display::CORNER_RADIUS,
-                                   Config::Display::COLOR_SECONDARY_BG);
-                                   
-        // Draw header text
-        CoreS3.Display.setTextSize(2);
-        CoreS3.Display.setTextDatum(middle_center);
-        CoreS3.Display.setTextColor(Config::Display::COLOR_PRIMARY);
-        CoreS3.Display.drawString("Temperature Monitor", 
-                                CoreS3.Display.width() / 2,
-                                Config::Display::PADDING + (Config::Display::HEADER_HEIGHT / 2));
+    }
+
+    // Always draw header background
+    CoreS3.Display.fillRoundRect(Config::Display::PADDING, 
+                               Config::Display::PADDING, 
+                               CoreS3.Display.width() - (Config::Display::PADDING * 2),
+                               Config::Display::HEADER_HEIGHT,
+                               Config::Display::CORNER_RADIUS,
+                               Config::Display::COLOR_SECONDARY_BG);
+                               
+    // Always draw header text
+    CoreS3.Display.setTextSize(2);
+    CoreS3.Display.setTextDatum(middle_center);
+    CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
+    CoreS3.Display.drawString("Temperature Monitor", 
+                            CoreS3.Display.width() / 2,
+                            Config::Display::PADDING + (Config::Display::HEADER_HEIGHT / 2) - 2);
+    
+    // Draw monitoring indicator in top right
+    int indicatorX = CoreS3.Display.width() - (Config::Display::PADDING * 2);
+    int indicatorY = Config::Display::PADDING * 2;
+    int indicatorSize = 8;
+    
+    // Clear the indicator area first
+    CoreS3.Display.fillCircle(indicatorX, indicatorY, indicatorSize, Config::Display::COLOR_SECONDARY_BG);
+    
+    // Draw green circle if monitoring is active
+    if (state.isMonitoring) {
+        CoreS3.Display.fillCircle(indicatorX, indicatorY, indicatorSize, Config::Display::COLOR_SUCCESS);
     }
     
     if (isValidTemperature(temperature)) {
@@ -655,8 +698,11 @@ void drawMainDisplay(float temperature) {
             // Clear previous temperature area
             int clearWidth = totalWidth + (Config::Display::PADDING * 4);
             int clearHeight = tempHeight + (Config::Display::PADDING * 4);
-            CoreS3.Display.fillRoundRect(centerX - (clearWidth/2),
-                                       centerY - (clearHeight/2),
+            int tempAreaX = centerX - (clearWidth/2);
+            int tempAreaY = centerY - (clearHeight/2);
+            
+            CoreS3.Display.fillRoundRect(tempAreaX,
+                                       tempAreaY,
                                        clearWidth,
                                        clearHeight,
                                        Config::Display::CORNER_RADIUS,
@@ -675,12 +721,6 @@ void drawMainDisplay(float temperature) {
             CoreS3.Display.drawString(unitStr,
                                     centerX + (tempWidth/2) + Config::Display::PADDING,
                                     centerY - (tempHeight/4));  // Align with top of temperature
-            
-            // Draw monitoring indicator if active
-            if (state.isMonitoring) {
-                int indicatorY = centerY + clearHeight/2 + Config::Display::PADDING * 2;
-                CoreS3.Display.fillCircle(centerX, indicatorY, 5, Config::Display::COLOR_SUCCESS);
-            }
             
             lastDisplayedTemp = displayTemp;
         }
@@ -962,10 +1002,10 @@ void drawStatusBox() {
                                     Config::Display::COLOR_BACKGROUND);
             CoreS3.Display.drawString(state.statusMessage.c_str(),
                                     CoreS3.Display.width()/2,
-                                    boxY + boxHeight/2,
-                                    state.statusColor);
+                                    boxY + boxHeight/2);
         }
         
+        // Update the last known values
         lastStatus = state.statusMessage;
         lastColor = state.statusColor;
     }
