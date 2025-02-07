@@ -1,11 +1,4 @@
 #include <Wire.h>
-
-/*
- * Terp Meter Core - Temperature Monitoring Device
- * See Changelog.md for version history and recent changes
- * Last Updated: 2025-02-03 07:37:27 EST
- */
-
 #include <M5CoreS3.h>
 #include <M5GFX.h>
 #include <M5Unified.h>
@@ -49,7 +42,8 @@ namespace Config {
         const uint32_t COLOR_PRIMARY = 0x0099FF;     // Bright blue for primary elements
         const uint32_t COLOR_SUCCESS = 0x00E676;     // Material green
         const uint32_t COLOR_ERROR = 0xFF5252;       // Material red
-        const uint32_t COLOR_WARNING = 0xFFD740;     // Material amber
+        const uint32_t COLOR_WARNING = 0xFFAA00;     // Orange
+        const uint32_t COLOR_DISABLED = 0x666666;    // Gray for disabled elements
         const uint32_t COLOR_ACCENT = 0x7C4DFF;      // Material deep purple
         const uint32_t COLOR_SECONDARY_BG = 0x2D2D2D; // Slightly lighter background for contrast
         const uint32_t COLOR_BORDER = 0x404040;      // Medium gray for borders
@@ -63,7 +57,6 @@ namespace Config {
         const int HEADER_HEIGHT = 40;
         const int PADDING = 10;
         const int CORNER_RADIUS = 8;  // For rounded rectangles
-        const int STATUS_HEIGHT = 30;  // Added status box height
         
         // Fonts
         const lgfx::v1::IFont* FONT_HEADER = &fonts::FreeSansBold12pt7b;  // Smaller header font
@@ -71,6 +64,29 @@ namespace Config {
         const lgfx::v1::IFont* FONT_STATUS = &fonts::FreeSans12pt7b;      // Status messages
         const lgfx::v1::IFont* FONT_MENU = &fonts::FreeSans12pt7b;        // Menu items
         const lgfx::v1::IFont* FONT_SMALL = &fonts::FreeSans9pt7b;        // Small text
+        
+        // Monitor and Cloud indicators (left side)
+        const int MONITOR_CLOUD_X = 25;   // Left side position
+        const int MONITOR_Y = 60;         // Original vertical position
+        const int CLOUD_Y = MONITOR_Y + 35; // 35px below monitor indicator
+        
+        // WiFi and Battery (right side, moved left)
+        const int RIGHT_SIDE_X = 260;     // Moved left from 285
+        const int WIFI_ICON_X = RIGHT_SIDE_X;
+        const int WIFI_ICON_Y = 60;       // Same height as original monitor
+        const int BATTERY_ICON_X = RIGHT_SIDE_X;
+        const int BATTERY_ICON_Y = 95;    // Same height as original cloud
+        
+        // Emissivity display position (further right)
+        const int EMISSIVITY_X = 300;     // Moved further right
+        const int EMISSIVITY_Y = 160;     // Above status box
+        
+        // Icon sizes
+        const int WIFI_ICON_WIDTH = 25;    // Increased from 20
+        const int WIFI_ICON_HEIGHT = 20;   // Increased from 15
+        const int WIFI_BAR_WIDTH = 4;      // Increased from 3
+        const int WIFI_BAR_GAP = 2;        // Increased from 1
+        const int INDICATOR_CIRCLE_SIZE = 8;  // Radius of the monitor/cloud circles
     }
     
     namespace Emissivity {
@@ -410,6 +426,7 @@ void drawBatteryIndicator(int x, int y, int width, int height);
 void drawStatusIndicators();
 bool updateGoveeLight(bool isOn, uint8_t r, uint8_t g, uint8_t b);
 void syncGoveeWithTemp(float temperature);
+void drawWiFiStrength();
 
 const char* menuItems[] = {"Temperature Unit", "Brightness", "Sound", "Emissivity", "Exit"};
 
@@ -605,7 +622,9 @@ void setup() {
     // Initialize Core S3 with all features enabled
     auto cfg = M5.config();
     CoreS3.begin(cfg);
-    delay(100);  // Give hardware time to initialize
+    delay(500);  // Give hardware time to initialize
+
+    // Initialize wifi before cloud
 
     // Initialize Arduino Cloud (this also handles WiFi connection)
     initProperties();
@@ -758,6 +777,14 @@ void loop() {
         lastGoveeCheck = currentTime;
     }
 
+    // WiFi signal strength update
+    static unsigned long lastWiFiUpdate = 0;
+    const unsigned long WIFI_UPDATE_INTERVAL = 5000;  // Update every 5 seconds
+    if (millis() - lastWiFiUpdate >= WIFI_UPDATE_INTERVAL) {
+        lastWiFiUpdate = millis();
+        drawWiFiStrength();
+    }
+
     delay(10);  // Reduced delay since we have better timing control now
 }
 
@@ -800,8 +827,19 @@ void handleButtons() {
                 
             case SETTINGS_MENU:
                 if (state.menuSelection == 4) {  // Exit option selected
-                    transitionToMainDisplay();
-                    Serial.println("Exiting Settings Menu - Full redraw completed");
+                    state.menuState = MAIN_DISPLAY;
+                    CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);  // Clear entire screen
+                    state.menuNeedsRedraw = true;
+                    // Reset display state variables to force complete redraw
+                    float lastDisplayedTemp = -999;
+                    bool headerDrawn = false;
+                    bool wasInTarget = false;
+                    // Force immediate redraw of all elements
+                    float currentTemp = readTemperature();
+                    drawMainDisplay(currentTemp);
+                    drawStatusBox();
+                    drawStatusIndicators();
+                    Serial.println("Exiting Settings Menu - Full redraw triggered");
                 } else {
                     switch (state.menuSelection) {
                         case 0: // Temperature Unit
@@ -976,87 +1014,6 @@ void handleKeyAndLED() {
     }
 }
 
-void transitionToMainDisplay() {
-    state.menuState = MAIN_DISPLAY;  // Ensure state is set before drawing
-    
-    // Clear the entire screen
-    CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
-    
-    // Draw the header section
-    CoreS3.Display.fillRoundRect(Config::Display::PADDING, 
-                               Config::Display::PADDING, 
-                               CoreS3.Display.width() - (Config::Display::PADDING * 2),
-                               Config::Display::HEADER_HEIGHT,
-                               Config::Display::CORNER_RADIUS,
-                               Config::Display::COLOR_SECONDARY_BG);
-    
-    // Set up text properties for header
-    CoreS3.Display.setFont(Config::Display::FONT_HEADER);
-    CoreS3.Display.setTextDatum(middle_center);
-    CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
-    
-    // Draw the title
-    int headerCenterY = Config::Display::PADDING + (Config::Display::HEADER_HEIGHT / 2);
-    CoreS3.Display.drawString("Temperature Monitor", CoreS3.Display.width() / 2, headerCenterY);
-    
-    // Draw temperature display area
-    int tempBoxY = Config::Display::PADDING + Config::Display::HEADER_HEIGHT + Config::Display::PADDING;
-    int tempBoxHeight = CoreS3.Display.height() - tempBoxY - Config::Display::PADDING - Config::Display::STATUS_HEIGHT;
-    
-    CoreS3.Display.fillRoundRect(Config::Display::PADDING,
-                               tempBoxY,
-                               CoreS3.Display.width() - (Config::Display::PADDING * 2),
-                               tempBoxHeight,
-                               Config::Display::CORNER_RADIUS,
-                               Config::Display::COLOR_SECONDARY_BG);
-    
-    // Draw current temperature with proper formatting
-    float currentTemp = readTemperature();
-    if (isValidTemperature(currentTemp)) {
-        float displayTemp = settings.useCelsius ? currentTemp : celsiusToFahrenheit(currentTemp);
-        CoreS3.Display.setFont(Config::Display::FONT_TEMP);
-        CoreS3.Display.setTextDatum(middle_center);
-        
-        String tempStr = String(displayTemp, 1);
-        tempStr += settings.useCelsius ? " °C" : " °F";
-        
-        int tempY = tempBoxY + (tempBoxHeight / 2);
-        CoreS3.Display.drawString(tempStr, 
-                                CoreS3.Display.width() / 2,
-                                tempY);
-    }
-    
-    // Draw status box and message
-    int statusY = CoreS3.Display.height() - Config::Display::PADDING - Config::Display::STATUS_HEIGHT;
-    CoreS3.Display.fillRoundRect(Config::Display::PADDING,
-                               statusY,
-                               CoreS3.Display.width() - (Config::Display::PADDING * 2),
-                               Config::Display::STATUS_HEIGHT,
-                               Config::Display::CORNER_RADIUS,
-                               Config::Display::COLOR_SECONDARY_BG);
-    
-    // Draw status message if any
-    if (statusMessage.length() > 0) {
-        CoreS3.Display.setFont(Config::Display::FONT_STATUS);
-        CoreS3.Display.setTextDatum(middle_center);
-        CoreS3.Display.drawString(statusMessage,
-                                CoreS3.Display.width() / 2,
-                                statusY + (Config::Display::STATUS_HEIGHT / 2));
-    }
-    
-    // Draw all status indicators
-    drawStatusIndicators();
-    
-    // Draw battery indicator
-    float batteryLevel = CoreS3.Power.getBatteryLevel();
-    drawBatteryIndicator(batteryLevel);
-    
-    // Reset any state variables that might affect future updates
-    lastDisplayedTemp = currentTemp;
-    headerDrawn = true;
-    wasInTarget = isTemperatureInTarget(currentTemp);
-}
-
 void updateDisplay() {
     // Clear any previous status message when entering settings menu
     if (state.menuState == SETTINGS_MENU) {
@@ -1100,6 +1057,7 @@ void drawMainDisplay(float temperature) {
     static float lastDisplayedTemp = -999;
     static bool headerDrawn = false;
     static MenuState lastMenuState = SETTINGS_MENU;  // Initialize to SETTINGS_MENU to force first draw
+    static bool wasInTarget = false;  // Add back the wasInTarget declaration
     
     // Force a full redraw if we're coming from a different menu state
     bool needsFullRedraw = (lastMenuState != state.menuState);
@@ -1158,6 +1116,8 @@ void drawMainDisplay(float temperature) {
         headerDrawn = true;
     }
 
+    // Draw WiFi signal strength indicator
+    drawWiFiStrength();
     
     if (isValidTemperature(temperature)) {
         float displayTemp = settings.useCelsius ? temperature : celsiusToFahrenheit(temperature);
@@ -1291,14 +1251,14 @@ void drawMainDisplay(float temperature) {
     
     // Draw emissivity value in top-right corner
     char emissStr[10];
-    sprintf(emissStr, "E:%.2f", settings.emissivity);
+    sprintf(emissStr, "%.2f", settings.emissivity);
     CoreS3.Display.setFont(Config::Display::FONT_SMALL);
     CoreS3.Display.setTextDatum(middle_right);
     CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
-    CoreS3.Display.drawString(emissStr, CoreS3.Display.width() - 30, 70);
+    CoreS3.Display.drawString(emissStr, Config::Display::EMISSIVITY_X, Config::Display::EMISSIVITY_Y);
     
     // Draw battery indicator in top-right corner
-    drawBatteryIndicator(CoreS3.Display.width() - 80, 15, 50, 20);
+    drawBatteryIndicator(Config::Display::BATTERY_ICON_X, Config::Display::BATTERY_ICON_Y, 50, 20);
     
     // Sync Govee light with temperature status
     //syncGoveeWithTemp(temperature);
@@ -1598,7 +1558,7 @@ void drawStatusBox() {
     
     // Only redraw if the status/color has changed or we're forcing a redraw
     if (lastStatus != statusMgr.getMessage() || lastColor != statusMgr.getColor() || forceRedraw) {
-        const int boxHeight = Config::Display::STATUS_HEIGHT;
+        const int boxHeight = 50;
         const int boxMargin = Config::Display::PADDING;
         const int boxWidth = CoreS3.Display.width() - (boxMargin * 2);
         const int boxY = CoreS3.Display.height() - boxHeight - boxMargin;
@@ -1887,42 +1847,87 @@ void handleCloudConnection() {
 }
 
 void drawStatusIndicators() {
-    const int leftMargin = 15;
-    const int topMargin = 60;
-    const int indicatorSpacing = 35;
-    const int circleSize = 8;  // Radius of the circles
-    
-    int baseX = leftMargin + circleSize;
-    int baseY = topMargin + circleSize;
-
     // Draw Monitor Status
     CoreS3.Display.setFont(Config::Display::FONT_SMALL);
     CoreS3.Display.setTextDatum(middle_left);
     
-    // Clear the monitoring indicator area
-    CoreS3.Display.fillCircle(baseX, baseY, circleSize, Config::Display::COLOR_BACKGROUND);
+    // Monitor indicator (left side)
+    int baseX = Config::Display::MONITOR_CLOUD_X;
     
-    // Draw monitoring indicator (circle)
+    // Clear and draw monitoring indicator
+    CoreS3.Display.fillCircle(baseX, Config::Display::MONITOR_Y, 
+                            Config::Display::INDICATOR_CIRCLE_SIZE, 
+                            Config::Display::COLOR_BACKGROUND);
+    
     if (state.isMonitoring) {
-        CoreS3.Display.fillCircle(baseX, baseY, circleSize, Config::Display::COLOR_SUCCESS);
+        CoreS3.Display.fillCircle(baseX, Config::Display::MONITOR_Y, 
+                                Config::Display::INDICATOR_CIRCLE_SIZE, 
+                                Config::Display::COLOR_SUCCESS);
     } else {
-        CoreS3.Display.drawCircle(baseX, baseY, circleSize, Config::Display::COLOR_ERROR);
+        CoreS3.Display.drawCircle(baseX, Config::Display::MONITOR_Y, 
+                                Config::Display::INDICATOR_CIRCLE_SIZE, 
+                                Config::Display::COLOR_ERROR);
     }
-
-    // Draw Cloud Status below monitoring status
-    baseY += indicatorSpacing;
     
-    // Clear the cloud indicator area
-    CoreS3.Display.fillCircle(baseX, baseY, circleSize, Config::Display::COLOR_BACKGROUND);
+    // Cloud indicator (left side)
+    CoreS3.Display.fillCircle(baseX, Config::Display::CLOUD_Y, 
+                            Config::Display::INDICATOR_CIRCLE_SIZE, 
+                            Config::Display::COLOR_BACKGROUND);
     
     if (state.cloudConnected) {
-        CoreS3.Display.fillCircle(baseX, baseY, circleSize, Config::Display::COLOR_SUCCESS);
+        CoreS3.Display.fillCircle(baseX, Config::Display::CLOUD_Y, 
+                                Config::Display::INDICATOR_CIRCLE_SIZE, 
+                                Config::Display::COLOR_SUCCESS);
     } else {
-        CoreS3.Display.drawCircle(baseX, baseY, circleSize, Config::Display::COLOR_ERROR);
+        CoreS3.Display.drawCircle(baseX, Config::Display::CLOUD_Y, 
+                                Config::Display::INDICATOR_CIRCLE_SIZE, 
+                                Config::Display::COLOR_ERROR);
+    }
+    
+    // Labels
+    CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
+    CoreS3.Display.drawString("M", baseX + 15, Config::Display::MONITOR_Y);
+    CoreS3.Display.drawString("C", baseX + 15, Config::Display::CLOUD_Y);
+}
+
+void drawWiFiStrength() {
+    int32_t rssi = WiFi.RSSI();
+    int bars = 0;
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        // Draw X for no connection - adjusted for new size
+        CoreS3.Display.setTextColor(Config::Display::COLOR_ERROR);
+        CoreS3.Display.drawLine(Config::Display::WIFI_ICON_X, Config::Display::WIFI_ICON_Y, 
+                              Config::Display::WIFI_ICON_X + Config::Display::WIFI_ICON_WIDTH, 
+                              Config::Display::WIFI_ICON_Y + Config::Display::WIFI_ICON_HEIGHT, 
+                              Config::Display::COLOR_ERROR);
+        CoreS3.Display.drawLine(Config::Display::WIFI_ICON_X + Config::Display::WIFI_ICON_WIDTH, 
+                              Config::Display::WIFI_ICON_Y,
+                              Config::Display::WIFI_ICON_X, 
+                              Config::Display::WIFI_ICON_Y + Config::Display::WIFI_ICON_HEIGHT, 
+                              Config::Display::COLOR_ERROR);
+        return;
     }
 
-    // Simple text labels
-    CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
-    CoreS3.Display.drawString("M", baseX + 15, baseY + 2 - indicatorSpacing);
-    CoreS3.Display.drawString("C", baseX + 15, baseY + 2);
+    // Convert RSSI to bars (0-4)
+    if (rssi <= -100) bars = 0;
+    else if (rssi <= -75) bars = 1;
+    else if (rssi <= -65) bars = 2;
+    else if (rssi <= -55) bars = 3;
+    else bars = 4;
+
+    // Clear the WiFi icon area
+    CoreS3.Display.fillRect(Config::Display::WIFI_ICON_X, Config::Display::WIFI_ICON_Y,
+                          Config::Display::WIFI_ICON_WIDTH, Config::Display::WIFI_ICON_HEIGHT,
+                          Config::Display::COLOR_BACKGROUND);
+
+    // Draw the bars with increased spacing and width
+    for (int i = 0; i < 4; i++) {
+        int barHeight = (i + 1) * (Config::Display::WIFI_ICON_HEIGHT / 4);
+        int barX = Config::Display::WIFI_ICON_X + (i * (Config::Display::WIFI_BAR_WIDTH + Config::Display::WIFI_BAR_GAP));
+        int barY = Config::Display::WIFI_ICON_Y + Config::Display::WIFI_ICON_HEIGHT - barHeight;
+        
+        uint32_t barColor = (i < bars) ? Config::Display::COLOR_TEXT : Config::Display::COLOR_DISABLED;
+        CoreS3.Display.fillRect(barX, barY, Config::Display::WIFI_BAR_WIDTH, barHeight, barColor);
+    }
 }
