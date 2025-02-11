@@ -1,3 +1,5 @@
+//updated as of 02/11/2025 at 1:45 PM EST
+
 #include <Wire.h>
 #include <M5CoreS3.h>
 #include <M5GFX.h>
@@ -47,6 +49,7 @@ namespace Config {
         const uint32_t COLOR_ACCENT = 0x7C4DFF;      // Material deep purple
         const uint32_t COLOR_SECONDARY_BG = 0x2D2D2D; // Slightly lighter background for contrast
         const uint32_t COLOR_BORDER = 0x404040;      // Medium gray for borders
+        
         // Battery colors
         const uint32_t COLOR_BATTERY_LOW = 0xFF3D00;     // Red-orange for low battery
         const uint32_t COLOR_BATTERY_MEDIUM = 0xFFB300;  // Amber for medium battery
@@ -67,13 +70,13 @@ namespace Config {
         
         // Monitor and Cloud indicators (left side)
         const int MONITOR_CLOUD_X = 25;   // Left side position
-        const int MONITOR_Y = 60;         // Original vertical position
+        const int MONITOR_Y = 67;         // Moved down 7 pixels
         const int CLOUD_Y = MONITOR_Y + 35; // 35px below monitor indicator
         
         // WiFi and Battery (right side, moved left)
         const int RIGHT_SIDE_X = 260;     // Moved left from 285
         const int WIFI_ICON_X = RIGHT_SIDE_X;
-        const int WIFI_ICON_Y = 60;       // Same height as original monitor
+        const int WIFI_ICON_Y = 67;       // Moved down 7 pixels
         const int BATTERY_ICON_X = RIGHT_SIDE_X;
         const int BATTERY_ICON_Y = 95;    // Same height as original cloud
         
@@ -163,6 +166,7 @@ struct State {
     int menuSelection = 0;
     bool menuNeedsRedraw = true;  // New flag to track menu redraw
     float lastTemp = 0;
+    float lastDisplayedTemp = 0;  // Moved to State class
     unsigned long lastDisplayUpdate = 0;
     static const unsigned long DISPLAY_UPDATE_INTERVAL = 250; // Update every 250ms
     bool cloudConnected = false;
@@ -177,6 +181,13 @@ struct State {
     static const unsigned long BATTERY_CHECK_INTERVAL = 5000; // Check battery every 5 seconds
     StatusPriority currentPriority = PRIORITY_READY;
     
+    // Display update flags
+    bool tempNeedsUpdate = false;
+    bool statusNeedsUpdate = false;
+    bool batteryNeedsUpdate = false;
+    bool wifiNeedsUpdate = false;
+    bool indicatorsNeedsUpdate = false;
+
     void updateBatteryStatus() {
         unsigned long currentTime = millis();
         if (currentTime - lastBatteryCheck >= BATTERY_CHECK_INTERVAL) {
@@ -456,6 +467,21 @@ public:
     static const char* MSG_READY;
     
     void updateTemperatureStatus(float temperature, bool useCelsius) {
+        // Check if we should clear the temporary monitoring message
+        if (monitoringMessageStartTime > 0 && 
+            millis() - monitoringMessageStartTime >= MONITORING_MESSAGE_DURATION) {
+            monitoringMessageStartTime = 0;
+            if (!state.isMonitoring) {
+                clearStatus(PRIORITY_TEMP);
+                updateStatus(MSG_READY, Config::Display::COLOR_TEXT, PRIORITY_READY);
+                return;
+            }
+        }
+
+        if (!state.isMonitoring) {
+            return;
+        }
+
         if (!isValidTemperature(temperature)) {
             updateStatus(MSG_INVALID_TEMP, Config::Display::COLOR_ERROR, PRIORITY_TEMP);
             return;
@@ -465,84 +491,87 @@ public:
         
         // Determine temperature status, display color, and LED color
         uint32_t tempColor;
-        CRGB ledColor;
-        String statusMsg;
         bool inTargetRange = false;
         
         if (useCelsius) {
             if (displayTemp < TEMP_COLD_C) {
-                statusMsg = MSG_TOO_COLD;
                 tempColor = COLOR_COLD;
-                ledColor = LED_COLOR_COLD;
             } else if (displayTemp < TEMP_MIN_C) {
-                statusMsg = MSG_WARMING_UP;
                 tempColor = Config::Display::COLOR_WARNING;
-                ledColor = LED_COLOR_WARNING;
             } else if (displayTemp <= TEMP_MAX_C) {
-                statusMsg = MSG_PERFECT_TEMP;
                 tempColor = Config::Display::COLOR_SUCCESS;
-                ledColor = LED_COLOR_PERFECT;
                 inTargetRange = true;
             } else if (displayTemp > TEMP_HOT_C) {
-                statusMsg = MSG_TOO_HOT;
                 tempColor = Config::Display::COLOR_ERROR;
-                ledColor = LED_COLOR_HOT;
+            } else {
+                tempColor = Config::Display::COLOR_WARNING;
+            }
+        } else {
+            if (displayTemp < TEMP_COLD_F) {
+                tempColor = COLOR_COLD;
+            } else if (displayTemp < TEMP_MIN_F) {
+                tempColor = Config::Display::COLOR_WARNING;
+            } else if (displayTemp <= TEMP_MAX_F) {
+                tempColor = Config::Display::COLOR_SUCCESS;
+                inTargetRange = true;
+            } else if (displayTemp > TEMP_HOT_F) {
+                tempColor = Config::Display::COLOR_ERROR;
+            } else {
+                tempColor = Config::Display::COLOR_WARNING;
+            }
+        }
+        
+        // Play sound when entering target range
+        if (inTargetRange && !wasInTargetRange && settings.soundEnabled) {
+            CoreS3.Speaker.tone(1000, 100);
+        }
+        wasInTargetRange = inTargetRange;
+        
+        // Update status
+        String statusMsg;
+        if (useCelsius) {
+            if (displayTemp < TEMP_COLD_C) {
+                statusMsg = MSG_TOO_COLD;
+            } else if (displayTemp < TEMP_MIN_C) {
+                statusMsg = MSG_WARMING_UP;
+            } else if (displayTemp <= TEMP_MAX_C) {
+                statusMsg = MSG_PERFECT_TEMP;
+            } else if (displayTemp > TEMP_HOT_C) {
+                statusMsg = MSG_TOO_HOT;
             } else {
                 statusMsg = MSG_COOLING_DOWN;
-                tempColor = Config::Display::COLOR_WARNING;
-                ledColor = LED_COLOR_WARNING;
             }
         } else {
             if (displayTemp < TEMP_COLD_F) {
                 statusMsg = MSG_TOO_COLD;
-                tempColor = COLOR_COLD;
-                ledColor = LED_COLOR_COLD;
             } else if (displayTemp < TEMP_MIN_F) {
                 statusMsg = MSG_WARMING_UP;
-                tempColor = Config::Display::COLOR_WARNING;
-                ledColor = LED_COLOR_WARNING;
             } else if (displayTemp <= TEMP_MAX_F) {
                 statusMsg = MSG_PERFECT_TEMP;
-                tempColor = Config::Display::COLOR_SUCCESS;
-                ledColor = LED_COLOR_PERFECT;
-                inTargetRange = true;
             } else if (displayTemp > TEMP_HOT_F) {
                 statusMsg = MSG_TOO_HOT;
-                tempColor = Config::Display::COLOR_ERROR;
-                ledColor = LED_COLOR_HOT;
             } else {
                 statusMsg = MSG_COOLING_DOWN;
-                tempColor = Config::Display::COLOR_WARNING;
-                ledColor = LED_COLOR_WARNING;
             }
         }
         
-        if (state.isMonitoring) {
-            updateStatus(statusMsg, tempColor, PRIORITY_TEMP);
-            
-            // Update LED
-            leds[0] = ledColor;
-            FastLED.show();
-            
-            // Handle target range sound
-            if (inTargetRange && !wasInTargetRange && settings.soundEnabled) {
-                CoreS3.Speaker.tone(1000, 100);
-            }
-            wasInTargetRange = inTargetRange;
-        }
+        updateStatus(statusMsg, tempColor, PRIORITY_TEMP);
+        
+        // Update LED
+        leds[0] = (tempColor == COLOR_COLD) ? LED_COLOR_COLD : 
+                  (tempColor == Config::Display::COLOR_WARNING) ? LED_COLOR_WARNING : 
+                  (tempColor == Config::Display::COLOR_SUCCESS) ? LED_COLOR_PERFECT : 
+                  LED_COLOR_HOT;
+        FastLED.show();
     }
     
     void updateMonitoringStatus(bool isMonitoring) {
-        // Clear temperature status when turning monitoring off
-        if (!isMonitoring) {
-            clearStatus(PRIORITY_TEMP);
-        }
-        
-        // Update monitoring status
+        // Show temporary monitoring status message
         const char* msg = isMonitoring ? MSG_MONITORING_ON : MSG_MONITORING_OFF;
         uint32_t color = isMonitoring ? Config::Display::COLOR_SUCCESS : Config::Display::COLOR_ERROR;
         updateStatus(msg, color, PRIORITY_MONITORING);
-        
+        monitoringMessageStartTime = millis();
+
         // Update LED
         leds[0] = isMonitoring ? CRGB::Green : CRGB::Black;
         FastLED.show();
@@ -595,6 +624,8 @@ private:
     uint32_t statusColor = Config::Display::COLOR_TEXT;
     StatusPriority currentPriority = PRIORITY_READY;
     bool wasInTargetRange = false;
+    unsigned long monitoringMessageStartTime = 0;
+    static const unsigned long MONITORING_MESSAGE_DURATION = 3000; // 3 seconds in milliseconds
 };
 
 // Define static message constants
@@ -719,7 +750,7 @@ void loop() {
     static unsigned long lastDebugTime = 0;
     static unsigned long lastGoveeCheck = 0;
     const unsigned long TEMP_UPDATE_INTERVAL = 100;  // Keep at 100ms for live readings
-    const unsigned long DEBUG_INTERVAL = 1000;  // Debug output every second
+    const unsigned long DEBUG_INTERVAL = 5000;  // Debug output every 5 seconds
     const unsigned long GOVEE_CHECK_INTERVAL = 2000;  // Check Govee every 2 seconds
 
     static unsigned long lastCloudUpdate = 0;
@@ -740,31 +771,74 @@ void loop() {
         lastCloudUpdate = currentTime;
     }
     
-    // Debug output every second - now controlled by enableTempDebug flag
+    // Debug output every 5 seconds - now controlled by enableTempDebug flag
     if (enableTempDebug && currentTime - lastDebugTime >= DEBUG_INTERVAL) {
-        float currentTemp = readTemperature();
-        Serial.print("Menu State: ");
+        Serial.println("\n--- Debug Info ---");
+        
+        // State information
+        Serial.print("State:     Menu=");
         Serial.print(state.menuState);
-        Serial.print(" IsMonitoring: ");
-        Serial.print(state.isMonitoring);
-        Serial.print(" Temp: ");
-        Serial.print(currentTemp);
-        Serial.print("°C (");
-        Serial.print(celsiusToFahrenheit(currentTemp));
-        Serial.println("°F)");
+        Serial.print(" | Monitoring=");
+        Serial.println(state.isMonitoring ? "ON" : "OFF");
+        
+        // Temperature information
+        Serial.print("Temp:      ");
+        if (state.isMonitoring) {
+            float currentTemp = readTemperature();
+            Serial.print(currentTemp);
+            Serial.print("°C (");
+            Serial.print(celsiusToFahrenheit(currentTemp));
+            Serial.println("°F)");
+        } else {
+            Serial.println("-- °C (-- °F) [Monitoring OFF]");
+        }
+        
+        // Update flags
+        Serial.println("Updates:   ");
+        Serial.print("          Temperature: ");
+        Serial.println(state.tempNeedsUpdate ? "YES" : "NO");
+        Serial.print("          Status:      ");
+        Serial.println(state.statusNeedsUpdate ? "YES" : "NO");
+        Serial.print("          Battery:     ");
+        Serial.println(state.batteryNeedsUpdate ? "YES" : "NO");
+        Serial.print("          WiFi:        ");
+        Serial.println(state.wifiNeedsUpdate ? "YES" : "NO");
+        
+        Serial.println("----------------");
         lastDebugTime = millis();
     }
     
     // Temperature reading and display update
     if (currentTime - lastTempUpdate >= TEMP_UPDATE_INTERVAL) {
+        // Update temperature status regardless of monitoring state
         float temp = readTemperature();
-        bool tempChanged = abs(temp - state.lastTemp) > 0.5;
+        statusMgr.updateTemperatureStatus(temp, settings.useCelsius);
         
-        if (state.menuState == MAIN_DISPLAY) {
-            state.lastTemp = temp;  // Always update the last temperature
-            if (tempChanged || state.shouldUpdateDisplay()) {
-                updateDisplay();
+        // Only update display temperature when monitoring is active
+        if (state.isMonitoring && state.menuState == MAIN_DISPLAY) {
+            state.lastTemp = temp;
+            state.tempNeedsUpdate = true;
+        } else {
+            state.tempNeedsUpdate = false;
+        }
+
+        // Status updates are independent of monitoring state
+        state.statusNeedsUpdate = true;
+            
+        // Check if we need to update any part of the display
+        if (state.tempNeedsUpdate || state.statusNeedsUpdate || 
+            state.batteryNeedsUpdate || state.wifiNeedsUpdate || 
+            state.indicatorsNeedsUpdate) {
+            updateDisplay();
+            
+            // Clear all flags except temperature when monitoring
+            if (!state.isMonitoring) {
+                state.tempNeedsUpdate = false;
             }
+            state.statusNeedsUpdate = false;
+            state.batteryNeedsUpdate = false;
+            state.wifiNeedsUpdate = false;
+            state.indicatorsNeedsUpdate = false;
         }
         lastTempUpdate = currentTime;
     }
@@ -811,10 +885,10 @@ void handleButtons() {
         }
     }
 
-    // Button 1 (Blue) press - Increase emissivity / Cancel
+    // Button  1 (Red) press - Increase emissivity / Cancel
     if (!button1State && lastButton1State) {
         playSuccessSound();
-        Serial.print("Button 1 (Blue) pressed - ");
+        Serial.print("Button 1 (Red) pressed - ");
         
         MenuState prevState = state.menuState;
         switch (state.menuState) {
@@ -892,10 +966,10 @@ void handleButtons() {
         updateDisplay();
     }
     
-    // Button 2 (Red) press - Decrease emissivity / Navigate
+    // Button 2 (Blue) press - Decrease emissivity / Navigate
     if (!button2State && lastButton2State && (millis() - button2PressStart < 2000)) {
         playSuccessSound();
-        Serial.print("Button 2 (Red) pressed - ");
+        Serial.print("Button 2 (Blue) pressed - ");
         
         switch (state.menuState) {
             case SETTINGS_MENU:
@@ -1053,153 +1127,57 @@ void updateDisplay() {
     }
 }
 
-void drawMainDisplay(float temperature) {
-    static float lastDisplayedTemp = -999;
-    static bool headerDrawn = false;
-    static MenuState lastMenuState = SETTINGS_MENU;  // Initialize to SETTINGS_MENU to force first draw
-    static bool wasInTarget = false;  // Add back the wasInTarget declaration
-    
-    // Force a full redraw if we're coming from a different menu state
-    bool needsFullRedraw = (lastMenuState != state.menuState);
-    lastMenuState = state.menuState;
-    
-    // Always perform a full redraw when transitioning to main display
-    if (state.menuState == MAIN_DISPLAY && (needsFullRedraw || !headerDrawn)) {
-        CoreS3.Display.fillScreen(Config::Display::COLOR_BACKGROUND);
-        lastDisplayedTemp = -999;  // Force temperature redraw
-        headerDrawn = false;       // Force header redraw
-        wasInTarget = false;       // Reset temperature status
-        Serial.println("Main display - Full refresh triggered");
-        
-        // Draw header
-        CoreS3.Display.fillRoundRect(Config::Display::PADDING, 
-                                   Config::Display::PADDING, 
-                                   CoreS3.Display.width() - (Config::Display::PADDING * 2),
-                                   Config::Display::HEADER_HEIGHT,
-                                   Config::Display::CORNER_RADIUS,
-                                   Config::Display::COLOR_SECONDARY_BG);
-                               
-        CoreS3.Display.setFont(Config::Display::FONT_HEADER);
-        CoreS3.Display.setTextDatum(middle_center);
-        CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
-        
-        int headerCenterY = Config::Display::PADDING + (Config::Display::HEADER_HEIGHT / 2);
-        CoreS3.Display.drawString("Temperature Monitor", CoreS3.Display.width() / 2, headerCenterY);
-        headerDrawn = true;
-    }
-    
-    // Draw monitoring indicator in top left
-    drawStatusIndicators();
-
-    // Draw header background and text only if not already drawn
-    if (!headerDrawn) {
-        // Draw header background
-        CoreS3.Display.fillRoundRect(Config::Display::PADDING, 
-                                   Config::Display::PADDING, 
-                                   CoreS3.Display.width() - (Config::Display::PADDING * 2),
-                                   Config::Display::HEADER_HEIGHT,
-                                   Config::Display::CORNER_RADIUS,
-                                   Config::Display::COLOR_SECONDARY_BG);
-                               
-        // Draw header text             
-        CoreS3.Display.setFont(Config::Display::FONT_HEADER);
-        CoreS3.Display.setTextDatum(middle_center);
-        CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
-        
-        // Calculate vertical center of header box
-        int headerCenterY = Config::Display::PADDING + (Config::Display::HEADER_HEIGHT / 2);
-        
-        CoreS3.Display.drawString("Temperature Monitor",
-                            CoreS3.Display.width() / 2, 
-                            headerCenterY);  // Position at vertical center of header box
-        
-        headerDrawn = true;
-    }
-
-    // Draw WiFi signal strength indicator
-    drawWiFiStrength();
+void drawTemperatureDisplay(float temperature, int centerX, int centerY, bool needsFullRedraw = false) {
+    static float lastDisplayedTemp = -999;  // Initialize to force first draw
+    static bool wasInTargetRange = false;  // Track target range state
+    static bool emissivityDrawn = false;  // Track if emissivity label has been drawn
     
     if (isValidTemperature(temperature)) {
         float displayTemp = settings.useCelsius ? temperature : celsiusToFahrenheit(temperature);
         
-        // Determine temperature status, display color, and LED color
+        // Determine temperature color based on range
         uint32_t tempColor;
-        CRGB ledColor;
-        String statusMsg;
         bool inTargetRange = false;
         
         if (settings.useCelsius) {
             if (displayTemp < TEMP_COLD_C) {
                 tempColor = COLOR_COLD;
-                ledColor = LED_COLOR_COLD;
-                statusMsg = "Too Cold!";
             } else if (displayTemp < TEMP_MIN_C) {
                 tempColor = Config::Display::COLOR_WARNING;
-                ledColor = LED_COLOR_WARNING;
-                statusMsg = "Warming Up";
             } else if (displayTemp <= TEMP_MAX_C) {
                 tempColor = Config::Display::COLOR_SUCCESS;
-                ledColor = LED_COLOR_PERFECT;
-                statusMsg = "Perfect Temperature";
                 inTargetRange = true;
             } else if (displayTemp > TEMP_HOT_C) {
                 tempColor = Config::Display::COLOR_ERROR;
-                ledColor = LED_COLOR_HOT;
-                statusMsg = "Too Hot!";
             } else {
                 tempColor = Config::Display::COLOR_WARNING;
-                ledColor = LED_COLOR_WARNING;
-                statusMsg = "Cooling Down";
             }
         } else {
             if (displayTemp < TEMP_COLD_F) {
                 tempColor = COLOR_COLD;
-                ledColor = LED_COLOR_COLD;
-                statusMsg = "Too Cold!";
             } else if (displayTemp < TEMP_MIN_F) {
                 tempColor = Config::Display::COLOR_WARNING;
-                ledColor = LED_COLOR_WARNING;
-                statusMsg = "Warming Up";
             } else if (displayTemp <= TEMP_MAX_F) {
                 tempColor = Config::Display::COLOR_SUCCESS;
-                ledColor = LED_COLOR_PERFECT;
-                statusMsg = "Perfect Temperature";
                 inTargetRange = true;
             } else if (displayTemp > TEMP_HOT_F) {
                 tempColor = Config::Display::COLOR_ERROR;
-                ledColor = LED_COLOR_HOT;
-                statusMsg = "Too Hot!";
             } else {
                 tempColor = Config::Display::COLOR_WARNING;
-                ledColor = LED_COLOR_WARNING;
-                statusMsg = "Cooling Down";
             }
         }
         
-        // Update status message and color
-        if (state.isMonitoring) {
-            statusMgr.updateTemperatureStatus(temperature, settings.useCelsius);
-            
-            // Update LED color
-            leds[0] = ledColor;
-            FastLED.show();
-        }
-        
         // Play sound when entering target range
-        if (inTargetRange && !wasInTarget && settings.soundEnabled) {
+        if (inTargetRange && !wasInTargetRange && settings.soundEnabled) {
             CoreS3.Speaker.tone(1000, 100);
         }
-        wasInTarget = inTargetRange;
+        wasInTargetRange = inTargetRange;
         
         // Update if temperature changed significantly or needs full redraw
         if (abs(displayTemp - lastDisplayedTemp) >= 0.5 || needsFullRedraw) {
             char tempStr[10];
             char unitStr[2] = {settings.useCelsius ? 'C' : 'F', '\0'};
             sprintf(tempStr, "%d", (int)round(displayTemp));
-            
-            // Calculate all positions first
-            int centerX = CoreS3.Display.width() / 2;
-            int centerY = CoreS3.Display.height() / 2;
             
             // Calculate dimensions for temperature display
             CoreS3.Display.setFont(Config::Display::FONT_TEMP);  // Larger temperature
@@ -1210,58 +1188,131 @@ void drawMainDisplay(float temperature) {
             CoreS3.Display.setFont(Config::Display::FONT_STATUS);  // Smaller unit
             int unitWidth = CoreS3.Display.textWidth(unitStr);
             
-            // Calculate the total width needed
-            int totalWidth = tempWidth + unitWidth + Config::Display::PADDING;
+            // Calculate dimensions for emissivity text
+            CoreS3.Display.setFont(Config::Display::FONT_SMALL);
+            char emissivityStr[32];
+            sprintf(emissivityStr, "Emissivity = %.2f", settings.emissivity);
+            int emissivityWidth = CoreS3.Display.textWidth(emissivityStr);
+            int emissivityHeight = CoreS3.Display.fontHeight();
             
-            // Clear previous temperature area
+            // Calculate the total width and height needed
+            int totalWidth = max(tempWidth + unitWidth + Config::Display::PADDING, emissivityWidth);
+            int totalHeight = tempHeight + emissivityHeight + (Config::Display::PADDING * 2);
+            
+            // Clear previous temperature area with padding
             int clearWidth = totalWidth + (Config::Display::PADDING * 4);
-            int clearHeight = tempHeight + (Config::Display::PADDING * 4);
+            int clearHeight = totalHeight + (Config::Display::PADDING * 4);
             int tempAreaX = centerX - (clearWidth/2);
             int tempAreaY = centerY - (clearHeight/2);
             
-            CoreS3.Display.fillRoundRect(tempAreaX,
-                                       tempAreaY,
-                                       clearWidth,
-                                       clearHeight,
-                                       Config::Display::CORNER_RADIUS,
-                                       Config::Display::COLOR_SECONDARY_BG);
+            if (needsFullRedraw || !emissivityDrawn) {
+                // Clear entire area and redraw everything
+                CoreS3.Display.fillRoundRect(tempAreaX,
+                                           tempAreaY,
+                                           clearWidth,
+                                           clearHeight,
+                                           Config::Display::CORNER_RADIUS,
+                                           Config::Display::COLOR_SECONDARY_BG);
+                                           
+                // Draw emissivity - centered below temperature
+                CoreS3.Display.setFont(Config::Display::FONT_SMALL);
+                CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
+                CoreS3.Display.drawString(emissivityStr,
+                                        centerX,
+                                        centerY + (tempHeight/4) + Config::Display::PADDING);
+                emissivityDrawn = true;
+            } else {
+                // Only clear the temperature area
+                int tempClearHeight = tempHeight + (Config::Display::PADDING * 2);
+                CoreS3.Display.fillRect(tempAreaX,
+                                      tempAreaY,
+                                      clearWidth,
+                                      tempClearHeight,
+                                      Config::Display::COLOR_SECONDARY_BG);
+            }
             
-            // Draw temperature - always centered
+            // Draw temperature - centered horizontally, slightly above vertical center
             CoreS3.Display.setFont(Config::Display::FONT_TEMP);
-            CoreS3.Display.setTextColor(tempColor);  // Use status-based color
+            CoreS3.Display.setTextColor(tempColor);
             CoreS3.Display.setTextDatum(middle_center);
             CoreS3.Display.drawString(tempStr, 
                                     centerX - (unitWidth/2), 
-                                    centerY);
+                                    centerY - (emissivityHeight/2));
             
-            // Draw unit
+            // Draw unit - aligned with temperature
             CoreS3.Display.setFont(Config::Display::FONT_STATUS);
             CoreS3.Display.drawString(unitStr,
                                     centerX + (tempWidth/2) + Config::Display::PADDING,
-                                    centerY - (tempHeight/4));  // Align with top of temperature
+                                    centerY - (tempHeight/4) - (emissivityHeight/2));
             
             lastDisplayedTemp = displayTemp;
         }
-    } else if (needsFullRedraw) {
-        state.updateStatus("Invalid Temperature", Config::Display::COLOR_ERROR);
     }
     
-    // Update battery status
-    state.updateBatteryStatus();
+    // Reset emissivity drawn flag if doing a full redraw
+    if (needsFullRedraw) {
+        emissivityDrawn = false;
+    }
+}
+
+void drawMainDisplay(float temperature) {
+    static bool headerDrawn = false;
+    static MenuState lastMenuState = SETTINGS_MENU;  // Initialize to force first draw
     
-    // Draw emissivity value in top-right corner
-    char emissStr[10];
-    sprintf(emissStr, "%.2f", settings.emissivity);
-    CoreS3.Display.setFont(Config::Display::FONT_SMALL);
-    CoreS3.Display.setTextDatum(middle_right);
-    CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
-    CoreS3.Display.drawString(emissStr, Config::Display::EMISSIVITY_X, Config::Display::EMISSIVITY_Y);
+    // Force a full redraw if we're coming from a different menu state
+    bool needsFullRedraw = (lastMenuState != state.menuState);
+    lastMenuState = state.menuState;
     
-    // Draw battery indicator in top-right corner
-    drawBatteryIndicator(Config::Display::BATTERY_ICON_X, Config::Display::BATTERY_ICON_Y, 50, 20);
+    // Only redraw header when needed
+    if (!headerDrawn || needsFullRedraw) {
+        // Draw header background with rounded corners
+        const int headerMargin = Config::Display::PADDING;
+        const int headerWidth = CoreS3.Display.width() - (headerMargin * 2);
+        
+        // Draw header background
+        CoreS3.Display.fillRoundRect(headerMargin,
+                                   headerMargin,
+                                   headerWidth,
+                                   Config::Display::HEADER_HEIGHT,
+                                   Config::Display::CORNER_RADIUS,
+                                   Config::Display::COLOR_SECONDARY_BG);
+        
+        // Add subtle border
+        CoreS3.Display.drawRoundRect(headerMargin,
+                                   headerMargin,
+                                   headerWidth,
+                                   Config::Display::HEADER_HEIGHT,
+                                   Config::Display::CORNER_RADIUS,
+                                   Config::Display::COLOR_BORDER);
+        
+        CoreS3.Display.setFont(Config::Display::FONT_HEADER);
+        CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
+        CoreS3.Display.setTextDatum(middle_center);
+        CoreS3.Display.drawString("Terp Monitor",
+                                CoreS3.Display.width() / 2,
+                                (Config::Display::HEADER_HEIGHT / 2) + headerMargin);
+        
+        headerDrawn = true;
+    }
     
-    // Sync Govee light with temperature status
-    //syncGoveeWithTemp(temperature);
+    // Draw temperature in center of screen
+    drawTemperatureDisplay(temperature, 
+                         CoreS3.Display.width() / 2, 
+                         CoreS3.Display.height() / 2, 
+                         state.menuNeedsRedraw);
+    
+    // Draw status box at bottom
+    drawStatusBox();
+    
+    // Draw status indicators
+    drawStatusIndicators();
+    
+    // Reset header flag if we're changing menus
+    if (needsFullRedraw) {
+        headerDrawn = false;
+    }
+    
+    state.menuNeedsRedraw = false;
 }
 
 void drawSettingsMenu() {
@@ -1550,7 +1601,7 @@ void drawRestartConfirm() {
 void drawStatusBox() {
     static String lastStatus = "";
     static uint32_t lastColor = 0;
-    static MenuState lastMenuState = SETTINGS_MENU;  // Initialize to SETTINGS_MENU to force first draw
+    static MenuState lastMenuState = SETTINGS_MENU;  // Initialize to force first draw
     
     // Force redraw if we just came from settings menu
     bool forceRedraw = (lastMenuState == SETTINGS_MENU && state.menuState == MAIN_DISPLAY);
@@ -1579,21 +1630,18 @@ void drawStatusBox() {
                                    Config::Display::CORNER_RADIUS,
                                    Config::Display::COLOR_BORDER);
         
-        // Only draw status text if there is a message
-        if (statusMgr.getMessage().length() > 0) {
-            CoreS3.Display.setFont(Config::Display::FONT_STATUS);
-            CoreS3.Display.setTextDatum(middle_center);
-            CoreS3.Display.setTextColor(statusMgr.getColor());
-            
-            // Draw text with a slight shadow effect
-            CoreS3.Display.drawString(statusMgr.getMessage().c_str(), 
-                                    CoreS3.Display.width()/2 + 1,
-                                    boxY + boxHeight/2 + 1,
-                                    Config::Display::COLOR_BACKGROUND);
-            CoreS3.Display.drawString(statusMgr.getMessage().c_str(),
-                                    CoreS3.Display.width()/2,
-                                    boxY + boxHeight/2);
-        }
+        CoreS3.Display.setFont(Config::Display::FONT_STATUS);
+        CoreS3.Display.setTextDatum(middle_center);
+        CoreS3.Display.setTextColor(statusMgr.getColor());
+        
+        // Draw text with a slight shadow effect
+        CoreS3.Display.drawString(statusMgr.getMessage().c_str(), 
+                                CoreS3.Display.width()/2 + 1,
+                                boxY + boxHeight/2 + 1,
+                                Config::Display::COLOR_BACKGROUND);
+        CoreS3.Display.drawString(statusMgr.getMessage().c_str(),
+                                CoreS3.Display.width()/2,
+                                boxY + boxHeight/2);
         
         // Update the last known values
         lastStatus = statusMgr.getMessage();
@@ -1602,15 +1650,15 @@ void drawStatusBox() {
 }
 
 void drawBatteryIndicator(int x, int y, int width, int height) {
-    const int batteryNub = 4;  // Size of battery connector nub
-    const int borderWidth = 2;
+    const int batteryNub = 6;  // Bigger nub
+    const int borderWidth = 2;  // Thicker border
     const int innerWidth = width - (borderWidth * 2);
     const int innerHeight = height - (borderWidth * 2);
     
     // Draw outer shell
     CoreS3.Display.drawRoundRect(x, y, width, height, 3, Config::Display::COLOR_TEXT);
     CoreS3.Display.drawRoundRect(x + width, y + (height - batteryNub) / 2, 
-                                batteryNub, batteryNub, 1, Config::Display::COLOR_TEXT);
+                                batteryNub, batteryNub, 2, Config::Display::COLOR_TEXT);
     
     // Calculate fill width based on battery level
     int fillWidth = (state.batteryLevel / 100.0f) * innerWidth;
@@ -1634,13 +1682,13 @@ void drawBatteryIndicator(int x, int y, int width, int height) {
     }
     
     // Draw percentage text
-    CoreS3.Display.setFont(Config::Display::FONT_SMALL);
+    CoreS3.Display.setFont(Config::Display::FONT_SMALL);  // Using normal small font
     CoreS3.Display.setTextDatum(middle_center);
     CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
     
     String batteryText = String(static_cast<int>(state.batteryLevel)) + "%";
     if (state.isCharging) {
-        batteryText += "⚡";
+        batteryText += "⚡";  // Back to lightning bolt
     }
     
     CoreS3.Display.drawString(batteryText, 
@@ -1648,20 +1696,58 @@ void drawBatteryIndicator(int x, int y, int width, int height) {
                             y + (height / 2));
 }
 
-float readTemperature() {
-    float object_temp = 0;
-    float ambient_temp = 0;
+void drawStatusIndicators() {
+    // Update battery status
+    state.updateBatteryStatus();
     
-    // Read ambient temperature
-    Wire.beginTransmission(0x5A);
-    Wire.write(0x06);
-    Wire.endTransmission(false);
-    Wire.requestFrom(0x5A, 2);
-    if (Wire.available() == 2) {
-        uint16_t ambient_raw = (Wire.read() | (Wire.read() << 8));
-        ambient_temp = ambient_raw * 0.02 - 273.15;
+    // Draw Monitor Status
+    CoreS3.Display.setFont(Config::Display::FONT_SMALL);
+    CoreS3.Display.setTextDatum(middle_left);
+    
+    // Monitor indicator (left side)
+    int baseX = Config::Display::MONITOR_CLOUD_X;
+    
+    // Clear and draw monitoring indicator
+    CoreS3.Display.fillCircle(baseX, Config::Display::MONITOR_Y, 
+                            Config::Display::INDICATOR_CIRCLE_SIZE, 
+                            Config::Display::COLOR_BACKGROUND);
+    
+    if (state.isMonitoring) {
+        CoreS3.Display.fillCircle(baseX, Config::Display::MONITOR_Y, 
+                                Config::Display::INDICATOR_CIRCLE_SIZE, 
+                                Config::Display::COLOR_SUCCESS);
+    } else {
+        CoreS3.Display.drawCircle(baseX, Config::Display::MONITOR_Y, 
+                                Config::Display::INDICATOR_CIRCLE_SIZE, 
+                                Config::Display::COLOR_ERROR);
     }
     
+    // Cloud indicator (left side)
+    CoreS3.Display.fillCircle(baseX, Config::Display::CLOUD_Y, 
+                            Config::Display::INDICATOR_CIRCLE_SIZE, 
+                            Config::Display::COLOR_BACKGROUND);
+    
+    if (state.cloudConnected) {
+        CoreS3.Display.fillCircle(baseX, Config::Display::CLOUD_Y, 
+                                Config::Display::INDICATOR_CIRCLE_SIZE, 
+                                Config::Display::COLOR_SUCCESS);
+    } else {
+        CoreS3.Display.drawCircle(baseX, Config::Display::CLOUD_Y, 
+                                Config::Display::INDICATOR_CIRCLE_SIZE, 
+                                Config::Display::COLOR_ERROR);
+    }
+    
+    // Labels
+    CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
+    CoreS3.Display.drawString("M", baseX + 15, Config::Display::MONITOR_Y);
+    CoreS3.Display.drawString("C", baseX + 15, Config::Display::CLOUD_Y);
+    
+    // Draw battery indicator (top right, bigger size)
+    drawBatteryIndicator(CoreS3.Display.width() - 60, 15, 45, 20);
+}
+
+float readTemperature() {
+    float object_temp = 0;
     // Read object temperature
     Wire.beginTransmission(0x5A);
     Wire.write(0x07);
@@ -1844,50 +1930,6 @@ void handleCloudConnection() {
             }
         }
     }
-}
-
-void drawStatusIndicators() {
-    // Draw Monitor Status
-    CoreS3.Display.setFont(Config::Display::FONT_SMALL);
-    CoreS3.Display.setTextDatum(middle_left);
-    
-    // Monitor indicator (left side)
-    int baseX = Config::Display::MONITOR_CLOUD_X;
-    
-    // Clear and draw monitoring indicator
-    CoreS3.Display.fillCircle(baseX, Config::Display::MONITOR_Y, 
-                            Config::Display::INDICATOR_CIRCLE_SIZE, 
-                            Config::Display::COLOR_BACKGROUND);
-    
-    if (state.isMonitoring) {
-        CoreS3.Display.fillCircle(baseX, Config::Display::MONITOR_Y, 
-                                Config::Display::INDICATOR_CIRCLE_SIZE, 
-                                Config::Display::COLOR_SUCCESS);
-    } else {
-        CoreS3.Display.drawCircle(baseX, Config::Display::MONITOR_Y, 
-                                Config::Display::INDICATOR_CIRCLE_SIZE, 
-                                Config::Display::COLOR_ERROR);
-    }
-    
-    // Cloud indicator (left side)
-    CoreS3.Display.fillCircle(baseX, Config::Display::CLOUD_Y, 
-                            Config::Display::INDICATOR_CIRCLE_SIZE, 
-                            Config::Display::COLOR_BACKGROUND);
-    
-    if (state.cloudConnected) {
-        CoreS3.Display.fillCircle(baseX, Config::Display::CLOUD_Y, 
-                                Config::Display::INDICATOR_CIRCLE_SIZE, 
-                                Config::Display::COLOR_SUCCESS);
-    } else {
-        CoreS3.Display.drawCircle(baseX, Config::Display::CLOUD_Y, 
-                                Config::Display::INDICATOR_CIRCLE_SIZE, 
-                                Config::Display::COLOR_ERROR);
-    }
-    
-    // Labels
-    CoreS3.Display.setTextColor(Config::Display::COLOR_TEXT);
-    CoreS3.Display.drawString("M", baseX + 15, Config::Display::MONITOR_Y);
-    CoreS3.Display.drawString("C", baseX + 15, Config::Display::CLOUD_Y);
 }
 
 void drawWiFiStrength() {
